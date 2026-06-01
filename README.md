@@ -1,5 +1,3 @@
-# bopple
-
 # Bopple
 
 > Text a task. Get a PR. Go live your life.
