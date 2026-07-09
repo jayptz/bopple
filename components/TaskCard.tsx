@@ -1,4 +1,8 @@
+'use client'
+
+import { useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 import type { Task } from '@/types'
 
 function timeAgo(date: string) {
@@ -13,9 +17,44 @@ function timeAgo(date: string) {
 
 interface TaskCardProps {
   task: Task
+  onFeedbackSent?: () => void
 }
 
-export function TaskCard({ task }: TaskCardProps) {
+export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
+  const [feedback, setFeedback] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const canFeedback =
+    task.status === 'awaiting_feedback' ||
+    task.status === 'done' ||
+    (task.status === 'running' && Boolean(task.pr_url))
+
+  async function submitFeedback() {
+    if (!feedback.trim()) return
+    setSending(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback: feedback.trim() }),
+      })
+
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string }
+        throw new Error(data.error ?? 'Failed to send feedback')
+      }
+
+      setFeedback('')
+      onFeedbackSent?.()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to send feedback')
+    } finally {
+      setSending(false)
+    }
+  }
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
@@ -31,8 +70,8 @@ export function TaskCard({ task }: TaskCardProps) {
         {task.source === 'telegram' && <span>via Telegram</span>}
       </div>
 
-      {task.status === 'done' && task.pr_url && (
-        <div className="pt-2 border-t border-zinc-800">
+      {task.pr_url && (
+        <div className="pt-2 border-t border-zinc-800 space-y-2">
           <a
             href={task.pr_url}
             target="_blank"
@@ -42,10 +81,45 @@ export function TaskCard({ task }: TaskCardProps) {
             {task.pr_title ?? `PR #${task.pr_number}`} →
           </a>
           {task.files_changed != null && (
-            <p className="mt-1 text-xs text-zinc-500">
-              {task.files_changed} files · +{task.lines_added ?? 0} lines
+            <p className="text-xs text-zinc-500">
+              {task.files_changed} files changed
             </p>
           )}
+          {task.demo_url && (
+            <a
+              href={task.demo_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block text-sm text-blue-400 hover:text-blue-300"
+            >
+              Live preview →
+            </a>
+          )}
+        </div>
+      )}
+
+      {task.demo_logs && (
+        <pre className="text-xs text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-2 overflow-x-auto max-h-32">
+          {task.demo_logs.slice(0, 600)}
+        </pre>
+      )}
+
+      {canFeedback && (
+        <div className="pt-2 border-t border-zinc-800 space-y-2">
+          <label className="block text-xs font-medium text-zinc-400 uppercase tracking-wide">
+            Feedback
+          </label>
+          <textarea
+            value={feedback}
+            onChange={(e) => setFeedback(e.target.value)}
+            placeholder="Make the button larger, add tests..."
+            rows={2}
+            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-emerald-600 focus:outline-none resize-none"
+          />
+          {error && <p className="text-xs text-red-400">{error}</p>}
+          <Button size="sm" onClick={submitFeedback} disabled={sending || !feedback.trim()}>
+            {sending ? 'Sending...' : 'Send feedback'}
+          </Button>
         </div>
       )}
 

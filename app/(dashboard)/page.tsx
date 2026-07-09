@@ -123,7 +123,17 @@ export default function DashboardPage() {
       ) : (
         <div className="space-y-3">
           {tasks.map((task) => (
-            <TaskCard key={task.id} task={task} />
+            <TaskCard
+              key={task.id}
+              task={task}
+              onFeedbackSent={() => {
+                setTasks((prev) =>
+                  prev.map((t) =>
+                    t.id === task.id ? { ...t, status: 'queued' as const } : t
+                  )
+                )
+              }}
+            />
           ))}
         </div>
       )}
