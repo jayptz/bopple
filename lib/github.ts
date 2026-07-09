@@ -180,3 +180,10 @@ export async function openPullRequest(
 
   return { url: data.html_url, number: data.number }
 }
+
+export async function getDefaultBranch(token: string, repoFullName: string): Promise<string> {
+  const octokit = getOctokit(token)
+  const [owner, repo] = repoFullName.split('/')
+  const { data } = await octokit.repos.get({ owner, repo })
+  return data.default_branch
+}

@@ -1,4 +1,4 @@
-export type TaskStatus = 'queued' | 'running' | 'done' | 'failed'
+export type TaskStatus = 'queued' | 'running' | 'awaiting_feedback' | 'done' | 'failed'
 export type TaskSource = 'telegram' | 'dashboard'
 export type UserPlan = 'free' | 'pro' | 'team'
 
@@ -52,6 +52,10 @@ export interface Task {
   trigger_run_id: string | null
   model_used: string | null
   tokens_used: number | null
+  sandbox_id: string | null
+  conversation: { role: 'user' | 'assistant'; content: string }[] | null
+  demo_url: string | null
+  demo_logs: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null

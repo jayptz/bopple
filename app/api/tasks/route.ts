@@ -52,6 +52,13 @@ export async function POST(request: Request) {
 
   const typedProfile = profile as User
 
+  if (typedProfile.preferred_model.startsWith('gpt')) {
+    return NextResponse.json(
+      { error: 'VM agents currently require a Claude model. Switch in Settings.' },
+      { status: 400 }
+    )
+  }
+
   if (typedProfile.tasks_used_this_month >= typedProfile.tasks_limit) {
     return NextResponse.json({ error: 'Task limit reached' }, { status: 429 })
   }

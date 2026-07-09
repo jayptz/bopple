@@ -27,11 +27,20 @@ export async function sendTaskDone(
   prUrl: string,
   prTitle: string,
   filesChanged: number,
-  linesAdded: number
+  linesAdded: number,
+  demoUrl?: string | null
 ) {
+  const demoLine = demoUrl ? `\n\n[Live preview →](${demoUrl}) _(temporary)_` : ''
   await sendMessage(
     chatId,
-    `✅ *PR ready for review*\n\n*${prTitle}*\n\n${filesChanged} files changed, +${linesAdded} lines\n\n[Review PR →](${prUrl})`
+    `✅ *PR ready for review*\n\n*${prTitle}*\n\n${filesChanged} files changed, +${linesAdded} lines\n\n[Review PR →](${prUrl})${demoLine}\n\n_Reply with feedback to iterate, or send a new message for a fresh task._`
+  )
+}
+
+export async function sendFeedbackRequest(chatId: string, question: string) {
+  await sendMessage(
+    chatId,
+    `💬 *Need your input*\n\n${question}\n\n_Reply to this chat to continue._`
   )
 }
 
