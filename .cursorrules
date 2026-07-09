@@ -1,0 +1,12 @@
+# Bopple coding rules
+
+- TypeScript strict mode always, never use `any`
+- Server components by default, `'use client'` only when needed
+- Mobile-first — design for 390px width, then scale up
+- Never store raw API keys or tokens — always encrypt with /lib/crypto.ts before DB write
+- Never commit to main — every agent output is a PR on a new branch
+- Supabase RLS on every table — users only ever see their own rows
+- Every async function needs try/catch with proper error messages surfaced to user
+- Hard cap task usage before running any agent job
+- Use Tailwind only, no extra CSS libraries
+- Dark theme throughout — bg-zinc-950, zinc-900 surfaces, zinc-800 borders
