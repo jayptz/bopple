@@ -190,8 +190,7 @@ export const codingAgentJob = task({
           prUrl,
           agentResult.prTitle,
           pushResult.filesChanged,
-          0,
-          demo.demoUrl
+          demo.demoUrl ?? undefined
         )
       }
 
@@ -213,7 +212,7 @@ export const codingAgentJob = task({
         .eq('id', taskId)
 
       if (user.telegram_chat_id) {
-        await sendTaskFailed(user.telegram_chat_id, taskRow.prompt, message)
+        await sendTaskFailed(user.telegram_chat_id, message)
       }
 
       throw error
