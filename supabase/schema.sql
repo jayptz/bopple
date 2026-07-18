@@ -53,9 +53,9 @@ create policy "Users can CRUD own repos" on public.repos
 -- Tasks table
 create table if not exists public.tasks (
   id uuid primary key default gen_random_uuid(),
-  user_id uuid references public.users(id) on delete cascade not null,
+  user_id uuid references public.users(id) on delete cascade,
   repo_id uuid references public.repos(id) on delete set null,
-  repo_full_name text not null,
+  repo_full_name text,
   prompt text not null,
   status text default 'queued' check (status in ('queued', 'running', 'awaiting_feedback', 'done', 'failed')),
   branch_name text,
@@ -66,6 +66,7 @@ create table if not exists public.tasks (
   lines_added integer,
   error_message text,
   source text default 'telegram' check (source in ('telegram', 'dashboard')),
+  telegram_chat_id text,
   trigger_run_id text,
   model_used text,
   tokens_used integer,
@@ -85,3 +86,8 @@ create policy "Users can CRUD own tasks" on public.tasks
 
 -- Enable realtime on tasks
 alter publication supabase_realtime add table public.tasks;
+
+-- Migration helpers for existing databases
+alter table public.tasks alter column user_id drop not null;
+alter table public.tasks alter column repo_full_name drop not null;
+alter table public.tasks add column if not exists telegram_chat_id text;

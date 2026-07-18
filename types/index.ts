@@ -36,9 +36,9 @@ export interface Repo {
 
 export interface Task {
   id: string
-  user_id: string
+  user_id: string | null
   repo_id: string | null
-  repo_full_name: string
+  repo_full_name: string | null
   prompt: string
   status: TaskStatus
   branch_name: string | null
@@ -49,6 +49,7 @@ export interface Task {
   lines_added: number | null
   error_message: string | null
   source: TaskSource
+  telegram_chat_id: string | null
   trigger_run_id: string | null
   model_used: string | null
   tokens_used: number | null
