@@ -17,10 +17,16 @@ function authCloneUrl(repoFullName: string, githubToken: string) {
 }
 
 export async function createSandboxSession(existingSandboxId?: string | null): Promise<SandboxSession> {
-  const sandbox = existingSandboxId
-    ? await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
-    : await Sandbox.create({ timeoutMs: 600_000 })
-
+  if (existingSandboxId) {
+    try {
+      const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
+      return { sandbox, repoPath: REPO_PATH }
+    } catch {
+      // Sandbox expired or not found, create a new one
+    }
+  }
+  
+  const sandbox = await Sandbox.create({ timeoutMs: 600_000 })
   return { sandbox, repoPath: REPO_PATH }
 }
 
