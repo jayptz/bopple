@@ -11,7 +11,7 @@ create table if not exists public.users (
   telegram_connect_token text unique,
   anthropic_api_key text,
   openai_api_key text,
-  preferred_model text default 'claude-sonnet-4-20250514',
+  preferred_model text default 'claude-opus-4-8',
   plan text default 'free',
   tasks_used_this_month integer default 0,
   tasks_limit integer default 10,

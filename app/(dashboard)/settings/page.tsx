@@ -10,7 +10,7 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<Partial<User> | null>(null)
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [model, setModel] = useState('claude-sonnet-4-20250514')
+  const [model, setModel] = useState('claude-opus-4-8')
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [connectToken, setConnectToken] = useState<string | null>(null)
