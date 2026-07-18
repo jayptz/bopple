@@ -92,29 +92,55 @@ export async function listRepoDir(session: SandboxSession, relativePath = '.') {
   return session.sandbox.files.list(fullPath)
 }
 
+const MAX_DIFF_CHARS = 100_000
+
+export interface CommitResult {
+  pushed: boolean
+  filesChanged: number
+  linesAdded: number
+  linesRemoved: number
+  diff: string
+}
+
 export async function commitAndPush(
   session: SandboxSession,
   githubToken: string,
   message: string,
   branchName: string,
   repoFullName: string
-) {
+): Promise<CommitResult> {
   const status = await runInRepo(session, 'git status --porcelain', 30_000)
   if (!status.stdout.trim()) {
-    return { pushed: false, filesChanged: 0 }
+    return { pushed: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0, diff: '' }
   }
+
+  // Stage everything first so new/deleted files show up in numstat and the diff.
+  await runInRepo(session, 'git add -A', 30_000)
+
+  const numstat = await runInRepo(session, 'git diff --cached --numstat', 30_000)
+  let linesAdded = 0
+  let linesRemoved = 0
+  for (const line of numstat.stdout.trim().split('\n').filter(Boolean)) {
+    const [added, removed] = line.split('\t')
+    // Binary files report "-" instead of a count; skip those.
+    if (added !== '-') linesAdded += parseInt(added, 10) || 0
+    if (removed !== '-') linesRemoved += parseInt(removed, 10) || 0
+  }
+
+  const diffResult = await runInRepo(session, 'git diff --cached', 60_000)
+  const diff = diffResult.stdout.slice(0, MAX_DIFF_CHARS)
 
   const escapedMessage = message.replace(/"/g, '\\"')
   const remote = authCloneUrl(repoFullName, githubToken)
 
   await runInRepo(
     session,
-    `git add -A && git commit -m "${escapedMessage}" && git push ${remote} ${branchName}`,
+    `git commit -m "${escapedMessage}" && git push ${remote} ${branchName}`,
     180_000
   )
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
-  return { pushed: true, filesChanged: fileCount }
+  return { pushed: true, filesChanged: fileCount, linesAdded, linesRemoved, diff }
 }
 
 export interface DemoResult {

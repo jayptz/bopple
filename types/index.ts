@@ -47,6 +47,7 @@ export interface Task {
   pr_title: string | null
   files_changed: number | null
   lines_added: number | null
+  diff: string | null
   error_message: string | null
   source: TaskSource
   telegram_chat_id: string | null

@@ -177,6 +177,8 @@ export const codingAgentJob = task({
           pr_number: prNumber,
           pr_title: agentResult.prTitle,
           files_changed: pushResult.filesChanged,
+          lines_added: pushResult.linesAdded,
+          diff: pushResult.diff,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
           model_used: user.preferred_model,
