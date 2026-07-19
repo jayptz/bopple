@@ -61,6 +61,7 @@ export interface Task {
   pr_title: string | null
   files_changed: number | null
   lines_added: number | null
+  diff: string | null
   error_message: string | null
   source: TaskSource
   telegram_chat_id: string | null
@@ -71,6 +72,7 @@ export interface Task {
   conversation: { role: 'user' | 'assistant'; content: string }[] | null
   demo_url: string | null
   demo_logs: string | null
+  screenshot_url: string | null
   diff_text: string | null
   agent_logs: AgentLogEntry[] | null
   feedback_history: FeedbackEntry[] | null
@@ -85,8 +87,9 @@ export interface FeedbackEntry {
 }
 
 export const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-  { value: 'gpt-4o', label: 'GPT-4o' },
+  { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
+  { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
 ] as const
 
 export const AGENT_LOG_ICONS: Record<AgentLogType, string> = {

@@ -178,6 +178,19 @@ export async function sendTaskDone(
   await sendMessage(chatId, text)
 }
 
+export async function sendPhoto(
+  chatId: string,
+  photoUrl: string,
+  caption?: string
+): Promise<void> {
+  await telegramRequest('sendPhoto', {
+    chat_id: chatId,
+    photo: photoUrl,
+    caption,
+    parse_mode: 'Markdown',
+  })
+}
+
 export async function sendTaskFailed(chatId: string, error: string): Promise<void> {
   await sendMessage(
     chatId,

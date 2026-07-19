@@ -27,6 +27,8 @@ const mockTasks: Task[] = [
     conversation: null,
     demo_url: null,
     demo_logs: null,
+    diff: null,
+    screenshot_url: null,
     diff_text: `diff --git a/website/README.md b/website/README.md
 --- a/website/README.md
 +++ b/website/README.md
