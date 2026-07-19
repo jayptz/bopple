@@ -1,4 +1,3 @@
-import type { Browser } from 'playwright'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 const NAV_TIMEOUT_MS = 20_000
@@ -22,19 +21,38 @@ export async function captureScreenshot(
   route: string
 ): Promise<Buffer | null> {
   const url = toAbsoluteUrl(previewUrl, route)
-  const { chromium } = await import('playwright')
 
-  let browser: Browser | null = null
   try {
-    browser = await chromium.launch({ args: ['--no-sandbox'] })
-    const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-    await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
-    await page.waitForTimeout(SETTLE_MS)
-    return await page.screenshot({ type: 'png', fullPage: false })
+    // Optional peer for Trigger workers — avoid hard type dependency in Next builds.
+    const playwright = (await import(
+      /* webpackIgnore: true */ 'playwright'
+    )) as {
+      chromium: {
+        launch: (opts: { args?: string[] }) => Promise<{
+          newPage: (opts: { viewport: { width: number; height: number } }) => Promise<{
+            goto: (
+              pageUrl: string,
+              opts: { waitUntil: 'networkidle'; timeout: number }
+            ) => Promise<unknown>
+            waitForTimeout: (ms: number) => Promise<void>
+            screenshot: (opts: { type: 'png'; fullPage: boolean }) => Promise<Buffer>
+          }>
+          close: () => Promise<void>
+        }>
+      }
+    }
+
+    const browser = await playwright.chromium.launch({ args: ['--no-sandbox'] })
+    try {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+      await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
+      await page.waitForTimeout(SETTLE_MS)
+      return await page.screenshot({ type: 'png', fullPage: false })
+    } finally {
+      await browser.close().catch(() => undefined)
+    }
   } catch {
     return null
-  } finally {
-    if (browser) await browser.close().catch(() => undefined)
   }
 }
 

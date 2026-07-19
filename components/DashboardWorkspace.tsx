@@ -151,24 +151,25 @@ export function DashboardWorkspace() {
     [tasks, selectedTaskId]
   )
 
+  const selectedDiffText = selectedTask?.diff_text
+  const selectedPrNumber = selectedTask?.pr_number
+
   // Backfill diff from GitHub for older tasks that predate diff_text.
   useEffect(() => {
     setFetchedDiff(null)
-    if (!selectedTask) return
-    if (selectedTask.diff_text) return
-    if (!selectedTask.pr_number) return
+    if (!selectedTaskId || selectedDiffText || !selectedPrNumber) return
 
     let cancelled = false
     async function loadDiff() {
       try {
-        const res = await fetch(`/api/tasks/${selectedTask!.id}/diff`)
+        const res = await fetch(`/api/tasks/${selectedTaskId}/diff`)
         if (!res.ok) return
         const data = (await res.json()) as { diff?: string | null }
         if (!cancelled && data.diff) {
           setFetchedDiff(data.diff)
           setTasks((prev) =>
             prev.map((t) =>
-              t.id === selectedTask!.id ? { ...t, diff_text: data.diff ?? null } : t
+              t.id === selectedTaskId ? { ...t, diff_text: data.diff ?? null } : t
             )
           )
         }
@@ -180,7 +181,7 @@ export function DashboardWorkspace() {
     return () => {
       cancelled = true
     }
-  }, [selectedTask?.id, selectedTask?.diff_text, selectedTask?.pr_number])
+  }, [selectedTaskId, selectedDiffText, selectedPrNumber])
 
   // Auto-scroll chat as agent logs arrive.
   useEffect(() => {

@@ -10,7 +10,7 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<Partial<User> | null>(null)
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [model, setModel] = useState(DEFAULT_MODEL)
+  const [model, setModel] = useState<string>(DEFAULT_MODEL)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [connectToken, setConnectToken] = useState<string | null>(null)
