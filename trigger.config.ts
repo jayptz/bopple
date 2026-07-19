@@ -18,7 +18,14 @@ export default defineConfig({
   },
   build: {
     external: ['playwright', 'playwright-core'],
-    extensions: [playwright()],
+    extensions: [
+      // Pin ≤1.57 — Playwright 1.58+ changed --dry-run output and breaks this extension.
+      playwright({
+        browsers: ['chromium'],
+        headless: true,
+        version: '1.57.0',
+      }),
+    ],
   },
   dirs: ['./trigger'],
 })
