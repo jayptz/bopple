@@ -76,10 +76,6 @@ export async function POST(request: Request) {
       )
     }
 
-    if (typedProfile.tasks_used_this_month >= typedProfile.tasks_limit) {
-      return NextResponse.json({ error: 'Task limit reached' }, { status: 429 })
-    }
-
     const { data: repo, error: repoError } = await serviceClient
       .from('repos')
       .select('*')

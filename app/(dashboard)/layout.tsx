@@ -44,7 +44,7 @@ export default async function DashboardLayout({
           </div>
           <div className="flex items-center gap-4">
             <span className="text-xs text-zinc-500 hidden sm:block">
-              {profile?.tasks_used_this_month ?? 0}/{profile?.tasks_limit ?? 10} tasks
+              {profile?.tasks_used_this_month ?? 0} tasks
             </span>
             {profile?.github_avatar_url && (
               <Image

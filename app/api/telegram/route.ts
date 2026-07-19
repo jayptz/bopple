@@ -61,14 +61,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    if (user.tasks_used_this_month >= user.tasks_limit) {
-      await sendMessage(
-        chatId,
-        '⚠️ Task limit reached. Upgrade to Pro or wait until next month.'
-      )
-      return NextResponse.json({ ok: true })
-    }
-
     const { data: repo } = await supabase
       .from('repos')
       .select('id, full_name')

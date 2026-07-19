@@ -195,7 +195,7 @@ export default function SettingsPage() {
             <p className="text-xs text-zinc-500 mt-0.5">
               Plan: <span className="text-zinc-300 capitalize">{profile?.plan ?? 'free'}</span>
               {' · '}
-              {profile?.tasks_used_this_month ?? 0}/{profile?.tasks_limit ?? 10} tasks this month
+              {profile?.tasks_used_this_month ?? 0} tasks this month (unlimited)
             </p>
           </div>
         </div>
