@@ -6,8 +6,8 @@ export default defineConfig({
   // Node 22 ships a native WebSocket global needed by supabase-js realtime.
   runtime: 'node-22',
   logLevel: 'log',
-  // Room for the agent run PLUS install + dev-server boot + screenshot capture.
-  maxDuration: 600,
+  // Room for long installs/builds/screenshots — matches E2B sandbox lifetime (1h).
+  maxDuration: 3600,
   // Installing deps and running headless Chromium needs more than the default micro machine.
   machine: 'medium-1x',
   retries: {

@@ -9,6 +9,7 @@ import {
   sendTaskRunning,
   sendFeedbackRequest,
   sendPhoto,
+  sendMessage,
   upsertProgressMessage,
 } from '../lib/telegram'
 import type { AgentMessage } from '../lib/agent'
@@ -131,6 +132,12 @@ function toolLogFromCall(
         message: `Using tool: ${toolName}`,
       }
   }
+}
+
+function wantsScreenshot(text: string): boolean {
+  return /\b(screenshot|screen\s*shot|take\s+a\s+(pic|photo)|send\s+me\s+a\s+(pic|photo|image|screenshot)|show\s+me\s+(what|how)\s+it\s+looks|visual\s+preview)\b/i.test(
+    text
+  )
 }
 
 export const codingAgentJob = task({
@@ -415,23 +422,67 @@ export const codingAgentJob = task({
 
       const demo = await tryGenerateDemo(session)
 
-      // Best-effort screenshot: only when the user asked for one.
+      // Force screenshot when the user asked for one, even if the model forgot the tool.
+      const promptText = `${String(taskRow.prompt)}\n${feedback ?? ''}`
+      let screenshotRoute = agentResult.screenshotRoute
+      if (!screenshotRoute && wantsScreenshot(promptText)) {
+        screenshotRoute = '/'
+        await appendAgentLog(
+          supabase,
+          taskId,
+          'running',
+          'User asked for a screenshot — capturing / ...'
+        )
+      }
+
       let screenshotUrl: string | null = null
-      if (agentResult.screenshotRoute && demo.demoUrl) {
-        try {
-          await appendAgentLog(
-            supabase,
-            taskId,
-            'running',
-            `Capturing screenshot of ${agentResult.screenshotRoute}...`
-          )
-          const { captureScreenshot, uploadScreenshot } = await import('../lib/screenshot')
-          const png = await captureScreenshot(demo.demoUrl, agentResult.screenshotRoute)
-          if (png) {
-            screenshotUrl = await uploadScreenshot(supabase, taskId, png)
+      let screenshotError: string | null = null
+
+      if (screenshotRoute) {
+        if (!demo.demoUrl) {
+          screenshotError =
+            `Could not start a preview server.\n${demo.demoLogs.slice(0, 400)}`
+          await appendAgentLog(supabase, taskId, 'thinking', screenshotError.slice(0, 200))
+        } else {
+          try {
+            await appendAgentLog(
+              supabase,
+              taskId,
+              'running',
+              `Capturing screenshot of ${screenshotRoute}...`
+            )
+            const { captureScreenshot, uploadScreenshot } = await import('../lib/screenshot')
+            const captured = await captureScreenshot(demo.demoUrl, screenshotRoute)
+            if (!captured.buffer) {
+              screenshotError = captured.error ?? `Failed to capture ${captured.url}`
+            } else {
+              const uploaded = await uploadScreenshot(supabase, taskId, captured.buffer)
+              if (!uploaded.url) {
+                screenshotError =
+                  uploaded.error ??
+                  'Upload failed — is the Supabase "screenshots" bucket created?'
+              } else {
+                screenshotUrl = uploaded.url
+              }
+            }
+            if (screenshotError) {
+              await appendAgentLog(
+                supabase,
+                taskId,
+                'thinking',
+                `Screenshot failed: ${screenshotError.slice(0, 180)}`
+              )
+            }
+          } catch (error) {
+            screenshotError =
+              error instanceof Error ? error.message : 'Screenshot failed unexpectedly'
+            await appendAgentLog(
+              supabase,
+              taskId,
+              'thinking',
+              `Screenshot failed: ${screenshotError.slice(0, 180)}`
+            )
           }
-        } catch {
-          // Screenshot is optional — never block the PR on it.
         }
       }
 
@@ -491,11 +542,20 @@ export const codingAgentJob = task({
         }
       }
 
-      if (chatId && agentResult.screenshotRoute && screenshotUrl) {
+      if (chatId && screenshotRoute && screenshotUrl) {
         try {
           await sendPhoto(chatId, screenshotUrl, `📸 ${agentResult.prTitle}`)
         } catch {
           // Don't fail the job if the Telegram photo send fails
+        }
+      } else if (chatId && screenshotRoute && screenshotError) {
+        try {
+          await sendMessage(
+            chatId,
+            `⚠️ *PR is ready, but screenshot failed*\n\n${screenshotError.slice(0, 300)}`
+          )
+        } catch {
+          // ignore
         }
       }
 

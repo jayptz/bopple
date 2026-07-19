@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
-const NAV_TIMEOUT_MS = 20_000
-const SETTLE_MS = 1_000
+const NAV_TIMEOUT_MS = 45_000
+const SETTLE_MS = 2_000
 const SCREENSHOT_BUCKET = 'screenshots'
 
 function toAbsoluteUrl(previewUrl: string, route: string): string {
@@ -11,29 +11,40 @@ function toAbsoluteUrl(previewUrl: string, route: string): string {
   return `${base.replace(/\/$/, '')}${path}`
 }
 
+export interface CaptureResult {
+  buffer: Buffer | null
+  error: string | null
+  url: string
+}
+
 /**
- * Screenshot the running preview app. Returns a PNG buffer, or null if the page
- * couldn't be captured. Playwright is imported lazily so Next.js doesn't bundle it.
+ * Screenshot the running preview app.
+ * Playwright is imported lazily so Next.js doesn't bundle it.
  */
 export async function captureScreenshot(
   previewUrl: string,
   route: string
-): Promise<Buffer | null> {
+): Promise<CaptureResult> {
   const url = toAbsoluteUrl(previewUrl, route)
 
   try {
     const { chromium } = await import('playwright')
-    const browser = await chromium.launch({ args: ['--no-sandbox'] })
+    const browser = await chromium.launch({
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
-      await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
+      // networkidle often never settles on real sites (analytics/websockets).
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS })
       await page.waitForTimeout(SETTLE_MS)
-      return await page.screenshot({ type: 'png', fullPage: false })
+      const buffer = await page.screenshot({ type: 'png', fullPage: false })
+      return { buffer, error: null, url }
     } finally {
       await browser.close().catch(() => undefined)
     }
-  } catch {
-    return null
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Screenshot capture failed'
+    return { buffer: null, error: message.slice(0, 300), url }
   }
 }
 
@@ -44,13 +55,16 @@ export async function uploadScreenshot(
   supabase: SupabaseClient,
   taskId: string,
   buffer: Buffer
-): Promise<string | null> {
+): Promise<{ url: string | null; error: string | null }> {
   const path = `${taskId}/${Date.now()}.png`
   const { error } = await supabase.storage
     .from(SCREENSHOT_BUCKET)
     .upload(path, buffer, { contentType: 'image/png', upsert: true })
-  if (error) return null
+
+  if (error) {
+    return { url: null, error: error.message }
+  }
 
   const { data } = supabase.storage.from(SCREENSHOT_BUCKET).getPublicUrl(path)
-  return data.publicUrl ?? null
+  return { url: data.publicUrl ?? null, error: data.publicUrl ? null : 'No public URL returned' }
 }

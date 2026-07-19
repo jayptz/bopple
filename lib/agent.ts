@@ -128,7 +128,7 @@ Rules:
 - Write production-quality code matching existing patterns
 - Prefer small, focused changes
 - Run tests if they exist
-- Only call take_screenshot when the user explicitly asks to see the change visually (a screenshot/preview). Never call it otherwise.
+- If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
 - Never commit or push — that happens automatically after you call complete_task`
 
 async function executeTool(

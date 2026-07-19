@@ -3,7 +3,10 @@ import { CommandExitError, Sandbox } from 'e2b'
 const REPO_PATH = '/home/user/repo'
 const GIT_USER = 'Bopple Agent'
 const GIT_EMAIL = 'agent@bopple.dev'
-const COMMAND_TIMEOUT_MS = 120_000
+/** 0 = no command timeout (E2B disables the limit). */
+const COMMAND_TIMEOUT_MS = 0
+/** Sandbox lifetime — E2B caps at 1h (Hobby) / 24h (Pro). */
+const SANDBOX_TIMEOUT_MS = 3_600_000
 
 export { REPO_PATH }
 
@@ -71,28 +74,31 @@ export async function createSandboxSession(
 ): Promise<{ session: SandboxSession; resumed: boolean }> {
   if (existingSandboxId) {
     try {
-      const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 900_000 })
+      const sandbox = await Sandbox.connect(existingSandboxId, {
+        timeoutMs: SANDBOX_TIMEOUT_MS,
+      })
+      // Reset the lifetime clock on resume so long agent runs don't get killed mid-job.
+      await sandbox.setTimeout(SANDBOX_TIMEOUT_MS).catch(() => undefined)
       return { session: { sandbox, repoPath: REPO_PATH }, resumed: true }
     } catch {
       // Sandbox expired or not found, create a new one
     }
   }
 
-  const sandbox = await Sandbox.create({ timeoutMs: 900_000 })
+  const sandbox = await Sandbox.create({ timeoutMs: SANDBOX_TIMEOUT_MS })
   return { session: { sandbox, repoPath: REPO_PATH }, resumed: false }
 }
 
 async function gitConfig(session: SandboxSession) {
   await runInRepo(
     session,
-    `git config --global user.name ${shellQuote(GIT_USER)} && git config --global user.email ${shellQuote(GIT_EMAIL)}`,
-    30_000
+    `git config --global user.name ${shellQuote(GIT_USER)} && git config --global user.email ${shellQuote(GIT_EMAIL)}`
   )
 }
 
 export async function hasRepoCheckout(session: SandboxSession): Promise<boolean> {
   const result = await runCommand(session, `test -d ${REPO_PATH}/.git`, {
-    timeoutMs: 15_000,
+    timeoutMs: COMMAND_TIMEOUT_MS,
     allowNonZero: true,
   })
   return result.exitCode === 0
@@ -127,7 +133,7 @@ export async function prepareRepo(
     const checkoutRemote = await runInRepo(
       session,
       `git fetch ${shellQuote(remote)} ${shellQuote(branchName)} && git checkout -B ${shellQuote(branchName)} FETCH_HEAD`,
-      120_000,
+      COMMAND_TIMEOUT_MS,
       { allowNonZero: true }
     )
 
@@ -151,14 +157,12 @@ export async function cloneRepository(
   try {
     await runCommand(
       session,
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(defaultBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`,
-      { timeoutMs: 180_000 }
+      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(defaultBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`
     )
   } catch {
     await runCommand(
       session,
-      `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`,
-      { timeoutMs: 180_000 }
+      `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`
     )
   }
 
@@ -169,9 +173,9 @@ export async function createWorkBranch(session: SandboxSession, branchName: stri
   const quoted = shellQuote(branchName)
   // Prefer creating a new branch; if it already exists, check it out.
   try {
-    await runInRepo(session, `git checkout -b ${quoted}`, 30_000)
+    await runInRepo(session, `git checkout -b ${quoted}`)
   } catch {
-    await runInRepo(session, `git checkout ${quoted}`, 30_000)
+    await runInRepo(session, `git checkout ${quoted}`)
   }
 }
 
@@ -220,17 +224,17 @@ const DIFF_MAX_CHARS = 100_000
 
 /** Snapshot of current uncommitted changes (includes untracked via temporary stage). */
 export async function getWorkingDiff(session: SandboxSession): Promise<string> {
-  await runInRepo(session, 'git add -A', 60_000, { allowNonZero: true })
-  const diff = await runInRepo(session, 'git diff --cached', 60_000, {
+  await runInRepo(session, 'git add -A', COMMAND_TIMEOUT_MS, { allowNonZero: true })
+  const diff = await runInRepo(session, 'git diff --cached', COMMAND_TIMEOUT_MS, {
     allowNonZero: true,
   })
   // Unstage so the agent can keep editing; working tree stays intact.
-  await runInRepo(session, 'git reset HEAD', 30_000, { allowNonZero: true })
+  await runInRepo(session, 'git reset HEAD', COMMAND_TIMEOUT_MS, { allowNonZero: true })
   return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
 }
 
 export async function getLastCommitDiff(session: SandboxSession): Promise<string> {
-  const diff = await runInRepo(session, 'git show --format= --patch HEAD', 60_000, {
+  const diff = await runInRepo(session, 'git show --format= --patch HEAD', COMMAND_TIMEOUT_MS, {
     allowNonZero: true,
   })
   return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
@@ -243,7 +247,7 @@ export async function commitAndPush(
   branchName: string,
   repoFullName: string
 ) {
-  const status = await runInRepo(session, 'git status --porcelain', 30_000)
+  const status = await runInRepo(session, 'git status --porcelain')
   if (!status.stdout.trim()) {
     // Still push the branch so feedback resumes can clone it later if needed.
     await pushBranch(session, githubToken, branchName, repoFullName)
@@ -253,15 +257,14 @@ export async function commitAndPush(
 
   const remote = authCloneUrl(repoFullName, githubToken)
 
-  await runInRepo(session, 'git add -A', 60_000)
-  const stagedDiff = await runInRepo(session, 'git diff --cached', 60_000, {
+  await runInRepo(session, 'git add -A')
+  const stagedDiff = await runInRepo(session, 'git diff --cached', COMMAND_TIMEOUT_MS, {
     allowNonZero: true,
   })
-  await runInRepo(session, `git commit -m ${shellQuote(message)}`, 60_000)
+  await runInRepo(session, `git commit -m ${shellQuote(message)}`)
   await runInRepo(
     session,
-    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
-    180_000
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`
   )
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
@@ -279,8 +282,7 @@ export async function pushBranch(
   const remote = authCloneUrl(repoFullName, githubToken)
   await runInRepo(
     session,
-    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
-    180_000
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`
   )
 }
 
@@ -289,74 +291,140 @@ export interface DemoResult {
   demoLogs: string
 }
 
+const APP_DIR_CANDIDATES = ['.', 'website', 'web', 'frontend', 'app', 'client', 'src']
+
+async function findAppDir(session: SandboxSession): Promise<{
+  relativeDir: string
+  absPath: string
+  scripts: Record<string, string>
+} | null> {
+  for (const relativeDir of APP_DIR_CANDIDATES) {
+    const pkgPath = relativeDir === '.' ? 'package.json' : `${relativeDir}/package.json`
+    const pkgRaw = await readRepoFile(session, pkgPath).catch(() => null)
+    if (!pkgRaw) continue
+
+    try {
+      const pkg = JSON.parse(pkgRaw) as {
+        scripts?: Record<string, string>
+        dependencies?: Record<string, string>
+        devDependencies?: Record<string, string>
+      }
+      const scripts = pkg.scripts ?? {}
+      const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) }
+      const looksLikeApp =
+        Boolean(scripts.dev || scripts.start || scripts.preview) ||
+        Boolean(deps.next || deps.vite || deps.react || deps.astro || deps.nuxt)
+
+      if (!looksLikeApp && !scripts.dev && !scripts.start) continue
+
+      const absPath =
+        relativeDir === '.' ? session.repoPath : `${session.repoPath}/${relativeDir}`
+      return { relativeDir, absPath, scripts }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+async function startStaticServer(session: SandboxSession, port: number): Promise<string> {
+  await session.sandbox.commands.run(
+    `python3 -m http.server ${port} --bind 0.0.0.0`,
+    {
+      cwd: session.repoPath,
+      background: true,
+      stdin: false,
+      timeoutMs: 0,
+    }
+  )
+  await new Promise((resolve) => setTimeout(resolve, 3_000))
+  return session.sandbox.getHost(port)
+}
+
+/** Spin up a preview server so Playwright can screenshot the change. */
 export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResult> {
   const logs: string[] = []
+  const port = 3000
 
-  const pkgRaw = await readRepoFile(session, 'package.json').catch(() => null)
-  if (!pkgRaw) {
-    return { demoUrl: null, demoLogs: 'No package.json found — skipped demo.' }
-  }
+  const app = await findAppDir(session)
 
-  let pkg: { scripts?: Record<string, string> }
-  try {
-    pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> }
-  } catch {
-    return { demoUrl: null, demoLogs: 'Invalid package.json — skipped demo.' }
-  }
-
-  const scripts = pkg.scripts ?? {}
-
-  if (scripts.test) {
-    logs.push('=== npm test ===')
+  if (!app) {
+    logs.push('No package.json app found — serving repo root as static files.')
     try {
-      const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 300_000)
-      logs.push(test.stdout || test.stderr || '(no output)')
+      const demoUrl = await startStaticServer(session, port)
+      logs.push(`Preview: ${demoUrl}`)
+      return { demoUrl, demoLogs: logs.join('\n\n') }
     } catch (error) {
-      logs.push(error instanceof Error ? error.message : 'test failed')
+      logs.push(error instanceof Error ? error.message : 'static server failed')
+      return { demoUrl: null, demoLogs: logs.join('\n\n') }
     }
   }
 
+  logs.push(`App directory: ${app.relativeDir}`)
+
+  const scripts = app.scripts
   if (scripts.build) {
     logs.push('=== npm run build ===')
     try {
-      const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 300_000)
+      const build = await runCommand(
+        session,
+        'npm run build 2>&1 | tail -40',
+        { cwd: app.absPath, timeoutMs: COMMAND_TIMEOUT_MS }
+      )
       logs.push(build.stdout || build.stderr || '(no output)')
     } catch (error) {
       logs.push(error instanceof Error ? error.message : 'build failed')
     }
   }
 
-  const devScript = scripts.dev ?? scripts.start
-  if (!devScript) {
-    return { demoUrl: null, demoLogs: logs.join('\n\n') || 'No dev script found.' }
+  const scriptName = scripts.dev ? 'dev' : scripts.start ? 'start' : scripts.preview ? 'preview' : null
+
+  if (!scriptName) {
+    logs.push('No dev/start/preview script — serving as static files.')
+    try {
+      const demoUrl = await startStaticServer(session, port)
+      logs.push(`Preview: ${demoUrl}`)
+      return { demoUrl, demoLogs: logs.join('\n\n') }
+    } catch (error) {
+      logs.push(error instanceof Error ? error.message : 'static server failed')
+      return { demoUrl: null, demoLogs: logs.join('\n\n') }
+    }
   }
 
   try {
-    const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 300_000)
+    const install = await runCommand(session, 'npm install 2>&1 | tail -30', {
+      cwd: app.absPath,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+    })
     logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
   } catch (error) {
     logs.push(
       '=== npm install ===\n' + (error instanceof Error ? error.message : 'install failed')
     )
-    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+    // Still try static fallback from repo root.
+    try {
+      const demoUrl = await startStaticServer(session, port)
+      logs.push(`Install failed — fell back to static server: ${demoUrl}`)
+      return { demoUrl, demoLogs: logs.join('\n\n') }
+    } catch {
+      return { demoUrl: null, demoLogs: logs.join('\n\n') }
+    }
   }
 
-  const port = 3000
-  logs.push(`=== starting dev server on :${port} ===`)
-
-  const scriptName = scripts.dev ? 'dev' : 'start'
+  logs.push(`=== starting npm run ${scriptName} on :${port} ===`)
   await session.sandbox.commands.run(`npm run ${scriptName}`, {
-    cwd: session.repoPath,
+    cwd: app.absPath,
     background: true,
     stdin: false,
-    envs: { PORT: String(port), HOST: '0.0.0.0' },
+    envs: { PORT: String(port), HOST: '0.0.0.0', HOSTNAME: '0.0.0.0' },
     timeoutMs: 0,
   })
 
-  await new Promise((resolve) => setTimeout(resolve, 8000))
+  // Give Next/Vite time to compile before Playwright hits the URL.
+  await new Promise((resolve) => setTimeout(resolve, 15_000))
 
   const demoUrl = session.sandbox.getHost(port)
-  logs.push(`Preview: ${demoUrl} (temporary sandbox VM)`)
+  logs.push(`Preview: ${demoUrl}`)
 
   return { demoUrl, demoLogs: logs.join('\n\n') }
 }
