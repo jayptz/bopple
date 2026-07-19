@@ -30,8 +30,8 @@ export async function createCheckoutSession(
         quantity: 1,
       },
     ],
-    success_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings?billing=success`,
-    cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings?billing=cancel`,
+    success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings?billing=success`,
+    cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings?billing=cancel`,
     metadata: { userId },
   })
 
@@ -42,7 +42,7 @@ export async function createBillingPortalSession(customerId: string) {
   const stripe = getStripe()
   return stripe.billingPortal.sessions.create({
     customer: customerId,
-    return_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings`,
+    return_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings`,
   })
 }
 

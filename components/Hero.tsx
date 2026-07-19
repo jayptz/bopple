@@ -104,10 +104,10 @@ export function Hero() {
                 className="relative z-10 sm:absolute sm:bottom-28 sm:left-10 lg:bottom-32 lg:left-14"
               >
                 <a
-                  href="https://bopple.dev"
+                  href="/login"
                   className="btn-primary-glow inline-flex rounded-full px-7 py-3.5 text-[14px] font-semibold text-[#0D1117] transition hover:scale-[1.02]"
                 >
-                  Join waitlist
+                  Get started
                 </a>
                 <a
                   href="#moments"

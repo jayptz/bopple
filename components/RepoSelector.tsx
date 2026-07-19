@@ -19,7 +19,7 @@ export function RepoSelector({
     return (
       <p className="text-sm text-zinc-500">
         No active repos.{' '}
-        <a href="/repos" className="text-emerald-400 hover:underline">
+        <a href="/dashboard/repos" className="text-emerald-400 hover:underline">
           Connect one first →
         </a>
       </p>

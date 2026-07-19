@@ -4,9 +4,9 @@ import { createClient } from '@/lib/supabase-server'
 import { redirect } from 'next/navigation'
 
 const navItems = [
-  { href: '/', label: 'Tasks' },
-  { href: '/repos', label: 'Repos' },
-  { href: '/settings', label: 'Settings' },
+  { href: '/dashboard', label: 'Tasks' },
+  { href: '/dashboard/repos', label: 'Repos' },
+  { href: '/dashboard/settings', label: 'Settings' },
 ]
 
 export default async function DashboardLayout({
@@ -19,7 +19,7 @@ export default async function DashboardLayout({
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) redirect('/login')
+  if (!user) redirect('/login?next=/dashboard')
 
   const { data: profile } = await supabase
     .from('users')
@@ -31,9 +31,17 @@ export default async function DashboardLayout({
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
         <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-3">
-          <Link href="/" className="font-mono font-bold text-lg text-zinc-100">
-            Bopple
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link href="/dashboard" className="font-mono font-bold text-lg text-zinc-100">
+              Bopple
+            </Link>
+            <Link
+              href="/"
+              className="hidden text-xs text-zinc-500 hover:text-zinc-300 sm:inline"
+            >
+              Home
+            </Link>
+          </div>
           <div className="flex items-center gap-4">
             <span className="text-xs text-zinc-500 hidden sm:block">
               {profile?.tasks_used_this_month ?? 0}/{profile?.tasks_limit ?? 10} tasks

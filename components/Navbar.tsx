@@ -11,7 +11,7 @@ const links = [
 
 function Logo() {
   return (
-    <a href="#" className="group flex items-center gap-2.5">
+    <a href="/" className="group flex items-center gap-2.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#2AABEE]/30 bg-gradient-to-br from-[#2AABEE]/20 to-[#3ECF8E]/10 shadow-[0_0_16px_rgba(42,171,238,0.15)] transition group-hover:border-[#2AABEE]/50">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
           <path
@@ -56,10 +56,10 @@ function NavBarContent() {
           Docs
         </a>
         <a
-          href="https://bopple.dev"
+          href="/login"
           className="rounded-full bg-gradient-to-r from-[#2A303C] to-[#343B48] px-5 py-2.5 text-[13px] font-medium text-white shadow-[0_0_20px_rgba(42,171,238,0.15),inset_0_1px_0_rgba(255,255,255,0.08)] transition hover:shadow-[0_0_28px_rgba(42,171,238,0.25)]"
         >
-          Join waitlist
+          Sign in
         </a>
       </div>
     </div>

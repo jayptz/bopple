@@ -11,13 +11,13 @@ export function FinalCTA() {
             10 free tasks. No card required.
           </h2>
           <p className="mt-3 text-[15px] text-[#888]">
-            Private beta at bopple.dev
+            Sign in with GitHub and send your first task.
           </p>
           <a
-            href="https://bopple.dev"
+            href="/login"
             className="mt-8 inline-flex items-center gap-2 rounded-lg bg-white px-5 py-2.5 text-[14px] font-medium text-[#0A0A0A] hover:bg-[#E5E5E5]"
           >
-            Join waitlist
+            Get started
             <ArrowRight className="h-4 w-4" />
           </a>
         </div>
