@@ -1,12 +1,18 @@
 'use client'
 
+import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { Suspense } from 'react'
 import { createClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 
-export default function LoginPage() {
+function LoginForm() {
+  const searchParams = useSearchParams()
+  const next = searchParams.get('next') ?? '/dashboard'
+
   async function signInWithGitHub() {
     const supabase = createClient()
-    const redirectTo = `${window.location.origin}/api/auth/callback`
+    const redirectTo = `${window.location.origin}/api/auth/callback?next=${encodeURIComponent(next)}`
 
     await supabase.auth.signInWithOAuth({
       provider: 'github',
@@ -21,7 +27,9 @@ export default function LoginPage() {
     <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center px-4">
       <div className="w-full max-w-sm space-y-8 text-center">
         <div>
-          <h1 className="text-3xl font-bold text-zinc-100 font-mono">Bopple</h1>
+          <Link href="/" className="text-3xl font-bold text-zinc-100 font-mono">
+            Bopple
+          </Link>
           <p className="mt-2 text-sm text-zinc-500">
             Text a task. Get a PR. Go live your life.
           </p>
@@ -37,7 +45,25 @@ export default function LoginPage() {
         <p className="text-xs text-zinc-600">
           One click. No config. We only access repos you connect.
         </p>
+
+        <Link href="/" className="block text-xs text-zinc-500 hover:text-zinc-300">
+          ← Back to home
+        </Link>
       </div>
     </div>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center text-zinc-500 text-sm">
+          Loading...
+        </div>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   )
 }

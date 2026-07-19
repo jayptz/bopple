@@ -1,4 +1,4 @@
-import { Sandbox } from 'e2b'
+import { CommandExitError, Sandbox } from 'e2b'
 
 const REPO_PATH = '/home/user/repo'
 const GIT_USER = 'Bopple Agent'
@@ -16,53 +16,149 @@ function authCloneUrl(repoFullName: string, githubToken: string) {
   return `https://x-access-token:${githubToken}@github.com/${repoFullName}.git`
 }
 
-export async function createSandboxSession(existingSandboxId?: string | null): Promise<SandboxSession> {
-  let sandbox: Sandbox | null = null
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
 
-  // Try to resume the stored sandbox, but fall back to a fresh one if it's gone.
-  // Paused sandboxes expire and failed runs kill theirs, so a stale sandbox_id
-  // must not be fatal — the work lives on the git branch, which we re-clone.
+function formatCommandError(command: string, error: unknown): Error {
+  if (error instanceof CommandExitError) {
+    const details = [error.stderr, error.stdout, error.error]
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+      .slice(0, 1500)
+
+    // Never leak the GitHub token if it appeared in the command string.
+    const safeCommand = command.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@')
+    return new Error(
+      `Command failed (exit ${error.exitCode}): ${safeCommand}` +
+        (details ? `\n${details}` : '')
+    )
+  }
+
+  if (error instanceof Error) {
+    return new Error(error.message.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@'))
+  }
+
+  return new Error('Command failed')
+}
+
+async function runCommand(
+  session: SandboxSession,
+  command: string,
+  options?: { cwd?: string; timeoutMs?: number; allowNonZero?: boolean }
+) {
+  try {
+    return await session.sandbox.commands.run(command, {
+      cwd: options?.cwd,
+      timeoutMs: options?.timeoutMs ?? COMMAND_TIMEOUT_MS,
+      stdin: false,
+    })
+  } catch (error) {
+    if (options?.allowNonZero && error instanceof CommandExitError) {
+      return {
+        exitCode: error.exitCode,
+        stdout: error.stdout,
+        stderr: error.stderr,
+      }
+    }
+    throw formatCommandError(command, error)
+  }
+}
+
+export async function createSandboxSession(
+  existingSandboxId?: string | null
+): Promise<{ session: SandboxSession; resumed: boolean }> {
   if (existingSandboxId) {
     try {
-      sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
+      const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 900_000 })
+      return { session: { sandbox, repoPath: REPO_PATH }, resumed: true }
     } catch {
-      sandbox = null
+      // Sandbox expired or not found, create a new one
     }
   }
 
-  if (!sandbox) {
-    sandbox = await Sandbox.create({ timeoutMs: 600_000 })
-  }
-
-  return { sandbox, repoPath: REPO_PATH }
+  const sandbox = await Sandbox.create({ timeoutMs: 900_000 })
+  return { session: { sandbox, repoPath: REPO_PATH }, resumed: false }
 }
 
 async function gitConfig(session: SandboxSession) {
   await runInRepo(
     session,
-    `git config --global user.name "${GIT_USER}" && git config --global user.email "${GIT_EMAIL}"`,
+    `git config --global user.name ${shellQuote(GIT_USER)} && git config --global user.email ${shellQuote(GIT_EMAIL)}`,
     30_000
   )
+}
+
+export async function hasRepoCheckout(session: SandboxSession): Promise<boolean> {
+  const result = await runCommand(session, `test -d ${REPO_PATH}/.git`, {
+    timeoutMs: 15_000,
+    allowNonZero: true,
+  })
+  return result.exitCode === 0
+}
+
+/**
+ * Clone default branch and create a work branch.
+ * Never requires a bopple/* branch to already exist on origin — but will
+ * check it out from origin if a prior WIP push made it available.
+ */
+export async function prepareRepo(
+  session: SandboxSession,
+  repoFullName: string,
+  githubToken: string,
+  defaultBranch: string,
+  branchName: string,
+  options?: { resumed?: boolean; continueBranch?: boolean }
+) {
+  const continueBranch = options?.continueBranch ?? false
+  const resumed = options?.resumed ?? false
+
+  if (continueBranch && resumed && (await hasRepoCheckout(session))) {
+    await gitConfig(session)
+    await createWorkBranch(session, branchName)
+    return { cloned: false }
+  }
+
+  await cloneRepository(session, repoFullName, githubToken, defaultBranch)
+
+  if (continueBranch) {
+    const remote = authCloneUrl(repoFullName, githubToken)
+    const checkoutRemote = await runInRepo(
+      session,
+      `git fetch ${shellQuote(remote)} ${shellQuote(branchName)} && git checkout -B ${shellQuote(branchName)} FETCH_HEAD`,
+      120_000,
+      { allowNonZero: true }
+    )
+
+    if (checkoutRemote.exitCode === 0) {
+      return { cloned: true }
+    }
+  }
+
+  await createWorkBranch(session, branchName)
+  return { cloned: true }
 }
 
 export async function cloneRepository(
   session: SandboxSession,
   repoFullName: string,
   githubToken: string,
-  defaultBranch: string,
-  branchName?: string | null
+  defaultBranch: string
 ) {
   const cloneUrl = authCloneUrl(repoFullName, githubToken)
 
-  if (branchName) {
-    await session.sandbox.commands.run(
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${branchName} ${cloneUrl} ${REPO_PATH}`,
-      { timeoutMs: 180_000, stdin: false }
+  try {
+    await runCommand(
+      session,
+      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(defaultBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+      { timeoutMs: 180_000 }
     )
-  } else {
-    await session.sandbox.commands.run(
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${defaultBranch} ${cloneUrl} ${REPO_PATH}`,
-      { timeoutMs: 180_000, stdin: false }
+  } catch {
+    await runCommand(
+      session,
+      `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+      { timeoutMs: 180_000 }
     )
   }
 
@@ -70,14 +166,25 @@ export async function cloneRepository(
 }
 
 export async function createWorkBranch(session: SandboxSession, branchName: string) {
-  await runInRepo(session, `git checkout -b ${branchName}`, 30_000)
+  const quoted = shellQuote(branchName)
+  // Prefer creating a new branch; if it already exists, check it out.
+  try {
+    await runInRepo(session, `git checkout -b ${quoted}`, 30_000)
+  } catch {
+    await runInRepo(session, `git checkout ${quoted}`, 30_000)
+  }
 }
 
-export async function runInRepo(session: SandboxSession, command: string, timeoutMs = COMMAND_TIMEOUT_MS) {
-  const result = await session.sandbox.commands.run(command, {
+export async function runInRepo(
+  session: SandboxSession,
+  command: string,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  options?: { allowNonZero?: boolean }
+) {
+  const result = await runCommand(session, command, {
     cwd: session.repoPath,
     timeoutMs,
-    stdin: false,
+    allowNonZero: options?.allowNonZero,
   })
 
   return {
@@ -92,7 +199,11 @@ export async function readRepoFile(session: SandboxSession, relativePath: string
   return session.sandbox.files.read(fullPath)
 }
 
-export async function writeRepoFile(session: SandboxSession, relativePath: string, content: string) {
+export async function writeRepoFile(
+  session: SandboxSession,
+  relativePath: string,
+  content: string
+) {
   const fullPath = `${session.repoPath}/${relativePath.replace(/^\//, '')}`
   await session.sandbox.files.write(fullPath, content)
 }
@@ -105,14 +216,24 @@ export async function listRepoDir(session: SandboxSession, relativePath = '.') {
   return session.sandbox.files.list(fullPath)
 }
 
-const MAX_DIFF_CHARS = 100_000
+const DIFF_MAX_CHARS = 100_000
 
-export interface CommitResult {
-  pushed: boolean
-  filesChanged: number
-  linesAdded: number
-  linesRemoved: number
-  diff: string
+/** Snapshot of current uncommitted changes (includes untracked via temporary stage). */
+export async function getWorkingDiff(session: SandboxSession): Promise<string> {
+  await runInRepo(session, 'git add -A', 60_000, { allowNonZero: true })
+  const diff = await runInRepo(session, 'git diff --cached', 60_000, {
+    allowNonZero: true,
+  })
+  // Unstage so the agent can keep editing; working tree stays intact.
+  await runInRepo(session, 'git reset HEAD', 30_000, { allowNonZero: true })
+  return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
+}
+
+export async function getLastCommitDiff(session: SandboxSession): Promise<string> {
+  const diff = await runInRepo(session, 'git show --format= --patch HEAD', 60_000, {
+    allowNonZero: true,
+  })
+  return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
 }
 
 export async function commitAndPush(
@@ -121,39 +242,46 @@ export async function commitAndPush(
   message: string,
   branchName: string,
   repoFullName: string
-): Promise<CommitResult> {
+) {
   const status = await runInRepo(session, 'git status --porcelain', 30_000)
   if (!status.stdout.trim()) {
-    return { pushed: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0, diff: '' }
+    // Still push the branch so feedback resumes can clone it later if needed.
+    await pushBranch(session, githubToken, branchName, repoFullName)
+    const existing = await getLastCommitDiff(session).catch(() => '')
+    return { pushed: false, filesChanged: 0, diffText: existing }
   }
 
-  // Stage everything first so new/deleted files show up in numstat and the diff.
-  await runInRepo(session, 'git add -A', 30_000)
-
-  const numstat = await runInRepo(session, 'git diff --cached --numstat', 30_000)
-  let linesAdded = 0
-  let linesRemoved = 0
-  for (const line of numstat.stdout.trim().split('\n').filter(Boolean)) {
-    const [added, removed] = line.split('\t')
-    // Binary files report "-" instead of a count; skip those.
-    if (added !== '-') linesAdded += parseInt(added, 10) || 0
-    if (removed !== '-') linesRemoved += parseInt(removed, 10) || 0
-  }
-
-  const diffResult = await runInRepo(session, 'git diff --cached', 60_000)
-  const diff = diffResult.stdout.slice(0, MAX_DIFF_CHARS)
-
-  const escapedMessage = message.replace(/"/g, '\\"')
   const remote = authCloneUrl(repoFullName, githubToken)
 
+  await runInRepo(session, 'git add -A', 60_000)
+  const stagedDiff = await runInRepo(session, 'git diff --cached', 60_000, {
+    allowNonZero: true,
+  })
+  await runInRepo(session, `git commit -m ${shellQuote(message)}`, 60_000)
   await runInRepo(
     session,
-    `git commit -m "${escapedMessage}" && git push ${remote} ${branchName}`,
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
     180_000
   )
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
-  return { pushed: true, filesChanged: fileCount, linesAdded, linesRemoved, diff }
+  const diffText = (stagedDiff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
+  return { pushed: true, filesChanged: fileCount, diffText }
+}
+
+/** Push the current branch to origin (creates remote branch if missing). */
+export async function pushBranch(
+  session: SandboxSession,
+  githubToken: string,
+  branchName: string,
+  repoFullName: string
+) {
+  const remote = authCloneUrl(repoFullName, githubToken)
+  await runInRepo(
+    session,
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
+    180_000
+  )
 }
 
 export interface DemoResult {
@@ -177,88 +305,58 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   }
 
   const scripts = pkg.scripts ?? {}
-  const devScript = scripts.dev ?? scripts.start
-  if (!devScript) {
-    return { demoUrl: null, demoLogs: 'No dev/start script — nothing to preview.' }
-  }
 
-  // Install deps only if needed, then boot the dev server. Deliberately lean (no
-  // test/build) so the preview fits the task budget. Every step is non-fatal: on
-  // failure we return demoUrl=null and the caller still opens the PR.
-  const hasModules = await runInRepo(
-    session,
-    'test -d node_modules && echo yes || echo no',
-    15_000
-  )
-    .then((r) => r.stdout.trim() === 'yes')
-    .catch(() => false)
-
-  if (hasModules) {
-    logs.push('=== npm install skipped (node_modules already present) ===')
-  } else {
+  if (scripts.test) {
+    logs.push('=== npm test ===')
     try {
-      const install = await runInRepo(
-        session,
-        'npm install --no-audit --no-fund --progress=false 2>&1 | tail -20',
-        300_000
-      )
-      logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
-    } catch (e) {
-      logs.push('=== npm install failed/timed out ===\n' + (e instanceof Error ? e.message : String(e)))
-      return { demoUrl: null, demoLogs: logs.join('\n\n') }
+      const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 300_000)
+      logs.push(test.stdout || test.stderr || '(no output)')
+    } catch (error) {
+      logs.push(error instanceof Error ? error.message : 'test failed')
     }
   }
 
-  const scriptName = scripts.dev ? 'dev' : 'start'
-  const devLog = '/tmp/bopple-dev.log'
-  logs.push(`=== starting "${scriptName}" server ===`)
-  try {
-    // Tee the dev server's output to a file so we can report why it failed.
-    await session.sandbox.commands.run(`npm run ${scriptName} > ${devLog} 2>&1`, {
-      cwd: session.repoPath,
-      background: true,
-      stdin: false,
-      // Nudge frameworks that read PORT toward 3000; others (Vite→5173,
-      // Astro→4321, …) pick their own port, which we auto-detect below.
-      envs: { PORT: '3000', HOST: '0.0.0.0' },
-      timeoutMs: 0,
-    })
-  } catch (e) {
-    logs.push('dev server failed to start: ' + (e instanceof Error ? e.message : String(e)))
-    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+  if (scripts.build) {
+    logs.push('=== npm run build ===')
+    try {
+      const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 300_000)
+      logs.push(build.stdout || build.stderr || '(no output)')
+    } catch (error) {
+      logs.push(error instanceof Error ? error.message : 'build failed')
+    }
   }
 
-  // Wait for the server and discover which port it actually bound to — dev servers
-  // differ (Next/CRA→3000, Vite→5173, Astro→4321, Vite preview→4173, …). Probe the
-  // common ones until one answers. "Connection refused" on all of them means the
-  // app crashed on boot (e.g. it needs a database/env the sandbox doesn't have),
-  // so we skip the screenshot rather than shoot the sandbox's "port closed" page.
-  const detect = [
-    'for i in $(seq 1 45); do',
-    '  for p in 3000 5173 4321 4173 8080 5000 8000 3001 3002; do',
-    '    if curl -sf -o /dev/null "http://localhost:$p"; then echo "BOPPLE_PORT=$p"; exit 0; fi',
-    '  done',
-    '  sleep 2',
-    'done',
-  ].join('\n')
-  const detected = await runInRepo(session, detect, 110_000)
-    .then((r) => r.stdout.match(/BOPPLE_PORT=(\d+)/))
-    .catch(() => null)
+  const devScript = scripts.dev ?? scripts.start
+  if (!devScript) {
+    return { demoUrl: null, demoLogs: logs.join('\n\n') || 'No dev script found.' }
+  }
 
-  if (!detected) {
-    const tail = await runInRepo(session, `tail -n 30 ${devLog} 2>/dev/null || true`, 15_000)
-      .then((r) => r.stdout.trim())
-      .catch(() => '')
+  try {
+    const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 300_000)
+    logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
+  } catch (error) {
     logs.push(
-      'Dev server never responded on any common port — no preview captured.' +
-        (tail ? `\nLast dev-server output:\n${tail}` : '')
+      '=== npm install ===\n' + (error instanceof Error ? error.message : 'install failed')
     )
     return { demoUrl: null, demoLogs: logs.join('\n\n') }
   }
 
-  const port = Number(detected[1])
+  const port = 3000
+  logs.push(`=== starting dev server on :${port} ===`)
+
+  const scriptName = scripts.dev ? 'dev' : 'start'
+  await session.sandbox.commands.run(`npm run ${scriptName}`, {
+    cwd: session.repoPath,
+    background: true,
+    stdin: false,
+    envs: { PORT: String(port), HOST: '0.0.0.0' },
+    timeoutMs: 0,
+  })
+
+  await new Promise((resolve) => setTimeout(resolve, 8000))
+
   const demoUrl = session.sandbox.getHost(port)
-  logs.push(`Preview: ${demoUrl} (port ${port}, temporary sandbox VM)`)
+  logs.push(`Preview: ${demoUrl} (temporary sandbox VM)`)
 
   return { demoUrl, demoLogs: logs.join('\n\n') }
 }

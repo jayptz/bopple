@@ -2,6 +2,20 @@ export type TaskStatus = 'queued' | 'running' | 'awaiting_feedback' | 'done' | '
 export type TaskSource = 'telegram' | 'dashboard'
 export type UserPlan = 'free' | 'pro' | 'team'
 
+export type AgentLogType =
+  | 'thinking'
+  | 'reading'
+  | 'writing'
+  | 'running'
+  | 'committing'
+  | 'done'
+
+export interface AgentLogEntry {
+  timestamp: string
+  type: AgentLogType
+  message: string
+}
+
 export interface User {
   id: string
   github_id: string
@@ -59,9 +73,17 @@ export interface Task {
   demo_url: string | null
   demo_logs: string | null
   screenshot_url: string | null
+  diff_text: string | null
+  agent_logs: AgentLogEntry[] | null
+  feedback_history: FeedbackEntry[] | null
   created_at: string
   started_at: string | null
   completed_at: string | null
+}
+
+export interface FeedbackEntry {
+  timestamp: string
+  message: string
 }
 
 export const MODEL_OPTIONS = [
@@ -69,3 +91,12 @@ export const MODEL_OPTIONS = [
   { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
   { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
 ] as const
+
+export const AGENT_LOG_ICONS: Record<AgentLogType, string> = {
+  thinking: '🤔',
+  reading: '📖',
+  writing: '✏️',
+  running: '⚡',
+  committing: '📦',
+  done: '✅',
+}

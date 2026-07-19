@@ -16,7 +16,7 @@ const labels: Record<TaskStatus, string> = {
   queued: 'Queued',
   running: 'Running',
   awaiting_feedback: 'Needs input',
-  done: 'Done',
+  done: 'Resolved',
   failed: 'Failed',
 }
 

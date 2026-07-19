@@ -1,109 +1,294 @@
-import { task, logger } from '@trigger.dev/sdk/v3'
-import { createClient } from '@supabase/supabase-js'
+import { task } from '@trigger.dev/sdk/v3'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import ws from 'ws'
 import { getDefaultBranch, openPullRequest } from '../lib/github'
 import { decrypt } from '../lib/crypto'
 import {
-  sendMessage,
-  sendPhoto,
   sendTaskDone,
   sendTaskFailed,
+  sendTaskRunning,
   sendFeedbackRequest,
+  upsertProgressMessage,
 } from '../lib/telegram'
 import type { AgentMessage } from '../lib/agent'
 import { runAgentLoop } from '../lib/agent'
 import {
-  cloneRepository,
   closeSandbox,
   commitAndPush,
   createSandboxSession,
-  createWorkBranch,
+  getWorkingDiff,
+  prepareRepo,
+  pushBranch,
   tryGenerateDemo,
 } from '../lib/sandbox'
-import type { User } from '../types'
+import type { AgentLogEntry, AgentLogType, User } from '../types'
 
 function getSupabase() {
-  // The Trigger worker env exposes the URL as SUPABASE_URL; the Next.js app uses
-  // the NEXT_PUBLIC_ name. Accept either so the task runs in both environments.
-  const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
-  return createClient(url!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+  const url =
+    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!url) {
+    throw new Error(
+      'Missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) in Trigger.dev env'
+    )
+  }
+  if (!key) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY in Trigger.dev env')
+  }
+
+  // Trigger workers run Node 21; supabase-js realtime needs a WebSocket impl.
+  return createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+    realtime: {
+      transport: ws as unknown as typeof WebSocket,
+    },
+  })
+}
+
+async function appendAgentLog(
+  supabase: SupabaseClient,
+  taskId: string,
+  type: AgentLogType,
+  message: string
+): Promise<void> {
+  const entry: AgentLogEntry = {
+    timestamp: new Date().toISOString(),
+    type,
+    message,
+  }
+
+  const { error } = await supabase.rpc('append_agent_log', {
+    p_task_id: taskId,
+    p_entry: entry,
+  })
+
+  if (error) {
+    // Fallback: non-atomic append if RPC isn't migrated yet
+    const { data } = await supabase
+      .from('tasks')
+      .select('agent_logs')
+      .eq('id', taskId)
+      .single()
+
+    const existing = (data?.agent_logs as AgentLogEntry[] | null) ?? []
+    await supabase
+      .from('tasks')
+      .update({ agent_logs: [...existing, entry] })
+      .eq('id', taskId)
+  }
+}
+
+function toolLogFromCall(
+  toolName: string,
+  input: Record<string, unknown>
+): { type: AgentLogType; message: string } {
+  switch (toolName) {
+    case 'read_file':
+      return {
+        type: 'reading',
+        message: `Reading ${String(input.path ?? 'file')}...`,
+      }
+    case 'list_files':
+      return {
+        type: 'reading',
+        message: `Listing ${String(input.path ?? '.')}...`,
+      }
+    case 'write_file':
+      return {
+        type: 'writing',
+        message: `Writing ${String(input.path ?? 'file')}...`,
+      }
+    case 'bash': {
+      const command = String(input.command ?? '').slice(0, 80)
+      return {
+        type: 'running',
+        message: `Running: ${command}${command.length >= 80 ? '…' : ''}`,
+      }
+    }
+    case 'ask_user':
+      return {
+        type: 'thinking',
+        message: 'Asking for your input...',
+      }
+    case 'complete_task':
+      return {
+        type: 'thinking',
+        message: 'Wrapping up changes...',
+      }
+    default:
+      return {
+        type: 'thinking',
+        message: `Using tool: ${toolName}`,
+      }
+  }
 }
 
 export const codingAgentJob = task({
   id: 'coding-agent',
-  // No retries: this task is not idempotent. A retry re-clones from the default
-  // branch, re-runs the agent, and tries to push the same branch name again over
-  // now-diverged history — which fails with a non-fast-forward rejection (and
-  // double-spends on the model). On failure, the user re-creates the task instead.
-  retry: { maxAttempts: 1 },
+  retry: { maxAttempts: 2 },
   run: async (payload: { taskId: string; feedback?: string }) => {
     const supabase = getSupabase()
     const { taskId, feedback } = payload
 
-    // Everything runs inside this try so that ANY failure — including the early
-    // "Task not found" / decrypt / "No API key" throws below — writes a `failed`
-    // status back to the row. Otherwise a run that dies before the first status
-    // update leaves the task orphaned at 'queued' forever.
-    let session = null as Awaited<ReturnType<typeof createSandboxSession>> | null
-    let user: User | undefined
+    if (!taskId) {
+      throw new Error(
+        'Missing taskId in payload. Trigger with { "taskId": "<uuid>" } — empty {} will fail.'
+      )
+    }
+
+    const { data: taskRow, error: fetchError } = await supabase
+      .from('tasks')
+      .select('*, users(*)')
+      .eq('id', taskId)
+      .single()
+
+    if (fetchError || !taskRow) {
+      throw new Error(
+        `Task not found for id=${taskId}${fetchError ? `: ${fetchError.message}` : ''}`
+      )
+    }
+
+    let user = taskRow.users as User | null
+
+    // Telegram tasks may only have telegram_chat_id until linked
+    if (!user && taskRow.telegram_chat_id) {
+      const { data: byChat } = await supabase
+        .from('users')
+        .select('*')
+        .eq('telegram_chat_id', taskRow.telegram_chat_id)
+        .maybeSingle()
+      user = byChat as User | null
+    }
+
+    if (!user) {
+      throw new Error(
+        `No user linked to task ${taskId}. Connect Telegram / ensure user_id is set.`
+      )
+    }
+    const githubToken = user.github_access_token
+      ? decrypt(user.github_access_token)
+      : null
+    let anthropicKey: string | undefined
+    let openaiKey: string | undefined
 
     try {
-      const { data: taskRow, error: fetchError } = await supabase
-        .from('tasks')
-        .select('*, users(*)')
-        .eq('id', taskId)
-        .single()
-
-      if (fetchError || !taskRow) throw new Error('Task not found')
-
-      user = taskRow.users as User
-      const githubToken = user.github_access_token
-        ? decrypt(user.github_access_token)
-        : null
-      const anthropicKey = user.anthropic_api_key
+      anthropicKey = user.anthropic_api_key
         ? decrypt(user.anthropic_api_key)
         : undefined
-      const openaiKey = user.openai_api_key ? decrypt(user.openai_api_key) : undefined
+    } catch {
+      throw new Error(
+        'Failed to decrypt Anthropic API key. ENCRYPTION_KEY on Trigger.dev must match Vercel, then re-save your key in Settings.'
+      )
+    }
 
-      if (!githubToken) throw new Error('No GitHub token')
+    try {
+      openaiKey = user.openai_api_key ? decrypt(user.openai_api_key) : undefined
+    } catch {
+      throw new Error(
+        'Failed to decrypt OpenAI API key. ENCRYPTION_KEY on Trigger.dev must match Vercel, then re-save your key in Settings.'
+      )
+    }
 
-      const apiKey =
-        user.preferred_model.startsWith('gpt')
-          ? openaiKey ?? process.env.OPENAI_API_KEY
-          : anthropicKey ?? process.env.ANTHROPIC_API_KEY
+    if (!githubToken) throw new Error('No GitHub token')
 
-      if (!apiKey) throw new Error('No API key configured')
+    const usingByok = user.preferred_model.startsWith('gpt')
+      ? Boolean(openaiKey)
+      : Boolean(anthropicKey)
 
-      await supabase
-        .from('tasks')
-        .update({
-          status: 'running',
-          started_at: taskRow.started_at ?? new Date().toISOString(),
-          error_message: null,
-        })
-        .eq('id', taskId)
+    const apiKey =
+      user.preferred_model.startsWith('gpt')
+        ? openaiKey ?? process.env.OPENAI_API_KEY
+        : anthropicKey ?? process.env.ANTHROPIC_API_KEY
 
+    if (!apiKey) {
+      throw new Error(
+        'No API key configured. Add ANTHROPIC_API_KEY in Trigger.dev Production env, or paste your key in Dashboard → Settings.'
+      )
+    }
+
+    if (
+      !user.preferred_model.startsWith('gpt') &&
+      !apiKey.startsWith('sk-ant-')
+    ) {
+      throw new Error(
+        `Anthropic API key looks invalid (source: ${usingByok ? 'Settings BYOK' : 'ANTHROPIC_API_KEY env'}). Re-save a valid sk-ant-… key.`
+      )
+    }
+
+    const chatId = user.telegram_chat_id
+    let progressMessageId: number | null = null
+    let hasLoggedWriting = false
+
+    async function updateTelegramProgress(text: string) {
+      if (!chatId) return
+      try {
+        progressMessageId = await upsertProgressMessage(chatId, text, progressMessageId)
+      } catch {
+        // Don't fail the job if Telegram progress fails
+      }
+    }
+
+    await supabase
+      .from('tasks')
+      .update({
+        status: 'running',
+        started_at: taskRow.started_at ?? new Date().toISOString(),
+        error_message: null,
+        agent_logs: feedback ? taskRow.agent_logs ?? [] : [],
+      })
+      .eq('id', taskId)
+
+    // Mirror dashboard status=running in Telegram (same source of truth).
+    if (chatId) {
+      try {
+        progressMessageId = await sendTaskRunning(chatId, progressMessageId)
+      } catch {
+        // Don't fail the job if Telegram notify fails
+      }
+    }
+
+    const promptPreview = String(taskRow.prompt).slice(0, 120)
+    await appendAgentLog(supabase, taskId, 'thinking', `Working on: ${promptPreview}`)
+    await updateTelegramProgress(`🔄 *Running*\n\nWorking on: ${promptPreview}`)
+
+    let session: import('../lib/sandbox').SandboxSession | null = null
+
+    try {
       const defaultBranch = await getDefaultBranch(githubToken, taskRow.repo_full_name)
       const branchName =
         taskRow.branch_name ?? `bopple/${taskId.slice(0, 8)}-${Date.now()}`
 
-      session = await createSandboxSession(taskRow.sandbox_id)
+      const { session: sandboxSession, resumed } = await createSandboxSession(
+        taskRow.sandbox_id
+      )
+      session = sandboxSession
+      await appendAgentLog(supabase, taskId, 'thinking', 'Spinning up VM...')
 
-      if (feedback && taskRow.branch_name) {
-        await cloneRepository(
-          session,
-          taskRow.repo_full_name,
-          githubToken,
-          defaultBranch,
-          taskRow.branch_name
+      const prepared = await prepareRepo(
+        session,
+        taskRow.repo_full_name,
+        githubToken,
+        defaultBranch,
+        branchName,
+        {
+          resumed,
+          continueBranch: Boolean(feedback && taskRow.branch_name),
+        }
+      )
+
+      if (prepared.cloned) {
+        await appendAgentLog(supabase, taskId, 'reading', 'Cloning repo...')
+        await updateTelegramProgress(
+          '🔄 *Running*\n\nCloning your repo and starting work...'
         )
+        await appendAgentLog(supabase, taskId, 'thinking', 'Creating work branch...')
       } else {
-        await cloneRepository(
-          session,
-          taskRow.repo_full_name,
-          githubToken,
-          defaultBranch
-        )
-        await createWorkBranch(session, branchName)
+        await appendAgentLog(supabase, taskId, 'reading', 'Resuming existing VM checkout...')
+        await updateTelegramProgress('🔄 *Running*\n\nResuming your codebase...')
       }
 
       await supabase
@@ -123,6 +308,28 @@ export const codingAgentJob = task({
         model: user.preferred_model,
         apiKey,
         priorMessages: feedback ? priorMessages : [],
+        onToolCall: async (toolName, input) => {
+          const log = toolLogFromCall(toolName, input)
+          await appendAgentLog(supabase, taskId, log.type, log.message)
+
+          if (toolName === 'write_file' && !hasLoggedWriting) {
+            hasLoggedWriting = true
+            await updateTelegramProgress('✏️ Writing code...')
+          }
+
+          // Keep the code panel in sync as files change.
+          if (toolName === 'write_file') {
+            try {
+              if (!session) return
+              const diffText = await getWorkingDiff(session)
+              if (diffText) {
+                await supabase.from('tasks').update({ diff_text: diffText }).eq('id', taskId)
+              }
+            } catch {
+              // Best-effort — don't block the agent on diff snapshots.
+            }
+          }
+        },
       })
 
       const updatedConversation: AgentMessage[] = [
@@ -134,22 +341,62 @@ export const codingAgentJob = task({
       ]
 
       if (agentResult.needsFeedback) {
+        const feedbackQuestion =
+          agentResult.feedbackPrompt?.trim() ||
+          'I need a bit more info to continue. Reply in this chat.'
+
+        await appendAgentLog(supabase, taskId, 'thinking', feedbackQuestion)
+
+        // Persist WIP so resume works even if the VM expires.
+        let wipDiff = ''
+        try {
+          const wip = await commitAndPush(
+            session,
+            githubToken,
+            `wip(bopple): awaiting feedback`,
+            branchName,
+            taskRow.repo_full_name
+          )
+          wipDiff = wip.diffText
+        } catch {
+          try {
+            await pushBranch(session, githubToken, branchName, taskRow.repo_full_name)
+            wipDiff = await getWorkingDiff(session).catch(() => '')
+          } catch {
+            // Best-effort — sandbox resume can still recover local work.
+          }
+        }
+
         await supabase
           .from('tasks')
           .update({
             status: 'awaiting_feedback',
             conversation: updatedConversation,
             sandbox_id: session.sandbox.sandboxId,
+            branch_name: branchName,
+            ...(wipDiff ? { diff_text: wipDiff } : {}),
           })
           .eq('id', taskId)
 
-        if (user.telegram_chat_id && agentResult.feedbackPrompt) {
-          await sendFeedbackRequest(user.telegram_chat_id, agentResult.feedbackPrompt)
+        // Mirror dashboard status=awaiting_feedback with the real clarifying question.
+        if (chatId) {
+          try {
+            await sendFeedbackRequest(chatId, feedbackQuestion)
+          } catch {
+            // Don't fail the job if Telegram notify fails
+          }
         }
 
         await closeSandbox(session, true)
         return
       }
+
+      await appendAgentLog(
+        supabase,
+        taskId,
+        'committing',
+        'Committing changes and pushing branch...'
+      )
 
       const commitMessage = agentResult.prTitle
       const pushResult = await commitAndPush(
@@ -160,66 +407,27 @@ export const codingAgentJob = task({
         taskRow.repo_full_name
       )
 
-      // Demo preview + screenshot are best-effort. Never let them abort the run —
-      // the PR must still open even if the sandbox can't install deps or boot the
-      // app in time.
-      let demo: { demoUrl: string | null; demoLogs: string } = {
-        demoUrl: null,
-        demoLogs: '',
-      }
-      let screenshotUrl: string | null = null
-      let screenshotNote: string | null = null
-      try {
-        demo = await tryGenerateDemo(session)
-
-        // Capture a screenshot only when the user asked for one during the run.
-        if (agentResult.screenshotRoute) {
-          if (demo.demoUrl) {
-            const { captureScreenshot, uploadScreenshot } = await import('../lib/screenshot')
-            const png = await captureScreenshot(demo.demoUrl, agentResult.screenshotRoute)
-            if (png) {
-              screenshotUrl = await uploadScreenshot(supabase, taskId, png)
-            }
-            if (!screenshotUrl) {
-              screenshotNote = "📸 I couldn't capture a screenshot of the running app this time."
-            }
-          } else {
-            screenshotNote =
-              '📸 No web preview to screenshot — this change has nothing visual to render.'
-          }
-        }
-      } catch (demoError) {
-        logger.warn('Demo/screenshot step failed; opening the PR anyway', {
-          taskId,
-          error: demoError instanceof Error ? demoError.message : String(demoError),
-        })
-        if (agentResult.screenshotRoute) {
-          screenshotNote = "📸 I couldn't capture a screenshot of the running app this time."
-        }
-      }
+      const demo = await tryGenerateDemo(session)
 
       let prUrl = taskRow.pr_url
       let prNumber = taskRow.pr_number
 
       if (!prUrl) {
-        // Embed the screenshot in the PR body when we captured one — it's a public
-        // URL, so GitHub renders it inline for reviewers.
-        const previewSection = screenshotUrl
-          ? `\n\n## Preview\n\n![screenshot](${screenshotUrl})`
-          : ''
         const pr = await openPullRequest(
           githubToken,
           taskRow.repo_full_name,
           branchName,
           agentResult.prTitle,
-          `${agentResult.prBody}${previewSection}\n\n---\n*Created by [Bopple](https://bopple.dev)*`,
+          `${agentResult.prBody}\n\n---\n*Created by [Bopple](https://bopple.dev)*`,
           defaultBranch
         )
         prUrl = pr.url
         prNumber = pr.number
       }
 
-      const { error: doneError } = await supabase
+      await appendAgentLog(supabase, taskId, 'done', 'PR opened!')
+
+      await supabase
         .from('tasks')
         .update({
           status: 'awaiting_feedback',
@@ -229,9 +437,7 @@ export const codingAgentJob = task({
           pr_number: prNumber,
           pr_title: agentResult.prTitle,
           files_changed: pushResult.filesChanged,
-          lines_added: pushResult.linesAdded,
-          diff: pushResult.diff,
-          screenshot_url: screenshotUrl,
+          diff_text: pushResult.diffText || null,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
           model_used: user.preferred_model,
@@ -239,43 +445,34 @@ export const codingAgentJob = task({
         })
         .eq('id', taskId)
 
-      if (doneError) {
-        // The work succeeded (PR is open) but persisting the final state failed —
-        // e.g. a missing column. Surface it loudly instead of silently leaving the
-        // row stuck at 'running'.
-        logger.error('Failed to persist completed task state', {
-          taskId,
-          error: doneError.message,
-        })
-      }
-
-      if (user.telegram_chat_id && prUrl) {
-        await sendTaskDone(
-          user.telegram_chat_id,
-          prUrl,
-          agentResult.prTitle,
-          pushResult.filesChanged,
-          demo.demoUrl ?? undefined
-        )
-      }
-
-      if (user.telegram_chat_id && agentResult.screenshotRoute) {
-        if (screenshotUrl) {
-          await sendPhoto(user.telegram_chat_id, screenshotUrl, `📸 ${agentResult.prTitle}`)
-        } else if (screenshotNote) {
-          await sendMessage(user.telegram_chat_id, screenshotNote)
+      // Mirror dashboard completion fields (PR, files, demo) in Telegram.
+      if (chatId && prUrl) {
+        try {
+          await sendTaskDone(
+            chatId,
+            prUrl,
+            agentResult.prTitle,
+            pushResult.filesChanged,
+            demo.demoUrl ?? undefined,
+            progressMessageId
+          )
+        } catch {
+          // Don't fail the job if Telegram notify fails
         }
       }
 
       await closeSandbox(session, true)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
+      const errorForUser = message.slice(0, 200)
 
       if (session) {
         await closeSandbox(session, false).catch(() => undefined)
       }
 
-      const { error: failError } = await supabase
+      await appendAgentLog(supabase, taskId, 'thinking', `Failed: ${errorForUser}`)
+
+      await supabase
         .from('tasks')
         .update({
           status: 'failed',
@@ -284,15 +481,13 @@ export const codingAgentJob = task({
         })
         .eq('id', taskId)
 
-      if (failError) {
-        logger.error('Failed to persist failed task state', {
-          taskId,
-          error: failError.message,
-        })
-      }
-
-      if (user?.telegram_chat_id) {
-        await sendTaskFailed(user.telegram_chat_id, message)
+      // Mirror dashboard status=failed + error_message (truncated) in Telegram.
+      if (chatId) {
+        try {
+          await sendTaskFailed(chatId, errorForUser)
+        } catch {
+          // Don't fail the job if Telegram notify fails
+        }
       }
 
       throw error

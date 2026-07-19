@@ -83,10 +83,15 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-semibold text-zinc-100">Settings</h1>
-        <p className="text-sm text-zinc-500">API keys, model, Telegram, billing</p>
+    <div className="mx-auto h-full max-w-2xl space-y-8 overflow-y-auto px-4 py-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Settings</h1>
+          <p className="text-sm text-zinc-500">API keys, model, Telegram, billing</p>
+        </div>
+        <a href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300">
+          ← Back
+        </a>
       </div>
 
       <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -131,6 +136,9 @@ export default function SettingsPage() {
           <h2 className="text-sm font-medium text-zinc-300">API Keys (BYOK)</h2>
           <p className="text-xs text-zinc-500">
             Keys are encrypted before storage. Leave blank to keep existing.
+            {profile?.anthropic_api_key
+              ? ' Anthropic key is currently saved.'
+              : ' No Anthropic key saved — platform key will be used if configured.'}
           </p>
           <Input
             label="Anthropic API Key"
@@ -146,6 +154,36 @@ export default function SettingsPage() {
             value={openaiKey}
             onChange={(e) => setOpenaiKey(e.target.value)}
           />
+          {profile?.anthropic_api_key && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                setSaving(true)
+                setMessage(null)
+                try {
+                  const res = await fetch('/api/settings', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clear_anthropic_api_key: true }),
+                  })
+                  if (!res.ok) {
+                    const data = (await res.json()) as { error?: string }
+                    throw new Error(data.error ?? 'Failed to clear key')
+                  }
+                  setProfile((p) => (p ? { ...p, anthropic_api_key: null } : p))
+                  setMessage('Anthropic key cleared — will use platform ANTHROPIC_API_KEY')
+                } catch (err) {
+                  setMessage(err instanceof Error ? err.message : 'Failed to clear key')
+                } finally {
+                  setSaving(false)
+                }
+              }}
+            >
+              Clear saved Anthropic key
+            </Button>
+          )}
         </section>
 
         {message && <p className="text-sm text-zinc-400">{message}</p>}
@@ -162,7 +200,7 @@ export default function SettingsPage() {
             <p className="text-xs text-zinc-500 mt-0.5">
               Plan: <span className="text-zinc-300 capitalize">{profile?.plan ?? 'free'}</span>
               {' · '}
-              {profile?.tasks_used_this_month ?? 0}/{profile?.tasks_limit ?? 10} tasks this month
+              {profile?.tasks_used_this_month ?? 0} tasks this month (unlimited)
             </p>
           </div>
         </div>

@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import type { GitHubRepo } from '@/components/RepoSelector'
@@ -72,12 +73,17 @@ export default function ReposPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold text-zinc-100">Repos</h1>
-        <p className="text-sm text-zinc-500">
-          Select which repos Bopple can work on. Tasks use your first active repo.
-        </p>
+    <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto px-4 py-6 h-full">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Repos</h1>
+          <p className="text-sm text-zinc-500">
+            Select which repos Bopple can work on.
+          </p>
+        </div>
+        <Link href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300">
+          ← Back
+        </Link>
       </div>
 
       {loading ? (
@@ -91,7 +97,7 @@ export default function ReposPage() {
           {githubRepos.map((repo) => (
             <label
               key={repo.id}
-              className={`flex items-center gap-3 rounded-lg border p-3 cursor-pointer transition-colors ${
+              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
                 selected.has(repo.id)
                   ? 'border-emerald-700 bg-emerald-950/30'
                   : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
@@ -104,7 +110,7 @@ export default function ReposPage() {
                 className="rounded border-zinc-700 bg-zinc-800 text-emerald-600 focus:ring-emerald-600"
               />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-mono text-zinc-200 truncate">{repo.full_name}</p>
+                <p className="truncate text-sm font-mono text-zinc-200">{repo.full_name}</p>
                 <p className="text-xs text-zinc-500">
                   {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
                 </p>

@@ -76,6 +76,9 @@ create table if not exists public.tasks (
   demo_url text,
   demo_logs text,
   screenshot_url text,
+  diff_text text,
+  agent_logs jsonb default '[]'::jsonb,
+  feedback_history jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
   started_at timestamptz,
   completed_at timestamptz
@@ -93,3 +96,25 @@ alter publication supabase_realtime add table public.tasks;
 alter table public.tasks alter column user_id drop not null;
 alter table public.tasks alter column repo_full_name drop not null;
 alter table public.tasks add column if not exists telegram_chat_id text;
+alter table public.tasks add column if not exists agent_logs jsonb default '[]'::jsonb;
+alter table public.tasks add column if not exists feedback_history jsonb default '[]'::jsonb;
+alter table public.tasks add column if not exists diff_text text;
+alter table public.tasks add column if not exists screenshot_url text;
+
+-- Atomic append for agent activity logs
+create or replace function public.append_agent_log(
+  p_task_id uuid,
+  p_entry jsonb
+)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.tasks
+  set agent_logs = coalesce(agent_logs, '[]'::jsonb) || jsonb_build_array(p_entry)
+  where id = p_task_id;
+$$;
+
+grant execute on function public.append_agent_log(uuid, jsonb) to service_role;
+grant execute on function public.append_agent_log(uuid, jsonb) to authenticated;

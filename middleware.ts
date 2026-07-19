@@ -3,9 +3,8 @@ import { NextResponse, type NextRequest } from 'next/server'
 
 function isProtectedRoute(pathname: string) {
   return (
-    pathname === '/' ||
-    pathname.startsWith('/repos') ||
-    pathname.startsWith('/settings')
+    pathname === '/dashboard' ||
+    pathname.startsWith('/dashboard/')
   )
 }
 
@@ -38,21 +37,28 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
   const isAuthRoute = pathname.startsWith('/login')
 
+  // Legacy app routes → dashboard
+  if (pathname === '/repos' || pathname.startsWith('/repos/')) {
+    const url = request.nextUrl.clone()
+    url.pathname = pathname.replace(/^\/repos/, '/dashboard/repos')
+    return NextResponse.redirect(url)
+  }
+  if (pathname === '/settings' || pathname.startsWith('/settings/')) {
+    const url = request.nextUrl.clone()
+    url.pathname = pathname.replace(/^\/settings/, '/dashboard/settings')
+    return NextResponse.redirect(url)
+  }
+
   if (!user && isProtectedRoute(pathname)) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
+    url.searchParams.set('next', pathname)
     return NextResponse.redirect(url)
   }
 
   if (user && isAuthRoute) {
     const url = request.nextUrl.clone()
-    url.pathname = '/'
-    return NextResponse.redirect(url)
-  }
-
-  if (pathname === '/dashboard') {
-    const url = request.nextUrl.clone()
-    url.pathname = '/'
+    url.pathname = '/dashboard'
     return NextResponse.redirect(url)
   }
 

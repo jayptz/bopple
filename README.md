@@ -26,6 +26,20 @@ No code ever hits `main` without you. Every task ends in a reviewable PR, not a 
 
 ---
 
+## Why Bopple 
+
+Existing AI coding agents expect you to change how you work.
+
+Cursor requires an IDE.
+Jules requires GitHub.
+Devin lives in Slack.
+
+Bopple meets developers where they already are.
+
+Text a task.
+Review a pull request.
+Ship.
+
 ## Features
 
 - **Messenger-native** — send tasks via Telegram, no app download required

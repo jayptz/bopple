@@ -145,7 +145,7 @@ async function executeTool(
   switch (name) {
     case 'bash': {
       const command = String(input.command ?? '')
-      const result = await runInRepo(session, command)
+      const result = await runInRepo(session, command, undefined, { allowNonZero: true })
       const output = [
         `exit code: ${result.exitCode}`,
         result.stdout ? `stdout:\n${result.stdout.slice(0, 8000)}` : '',
@@ -231,8 +231,16 @@ export async function runAgentLoop(params: {
   model: string
   apiKey: string
   priorMessages?: AgentMessage[]
+  onToolCall?: (toolName: string, input: Record<string, unknown>) => void | Promise<void>
 }): Promise<AgentRunResult> {
-  const { session, prompt, model, apiKey, priorMessages = [] } = params
+  const {
+    session,
+    prompt,
+    model,
+    apiKey,
+    priorMessages = [],
+    onToolCall,
+  } = params
   const client = new Anthropic({ apiKey })
 
   const transcript: AgentMessage[] = [...priorMessages]
@@ -287,11 +295,12 @@ export async function runAgentLoop(params: {
     for (const toolUse of toolUses) {
       if (toolUse.type !== 'tool_use') continue
 
-      const result = await executeTool(
-        session,
-        toolUse.name,
-        toolUse.input as Record<string, unknown>
-      )
+      const input = toolUse.input as Record<string, unknown>
+      if (onToolCall) {
+        await onToolCall(toolUse.name, input)
+      }
+
+      const result = await executeTool(session, toolUse.name, input)
 
       if (result.screenshotRoute) {
         screenshotRoute = result.screenshotRoute
