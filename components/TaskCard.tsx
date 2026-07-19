@@ -202,7 +202,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
               )}
             </p>
           )}
-          {task.diff && (
+          {(task.diff_text ?? task.diff) && (
             <div className="space-y-2">
               <button
                 onClick={() => setShowDiff((v) => !v)}
@@ -210,7 +210,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
               >
                 {showDiff ? 'Hide diff' : 'View diff'}
               </button>
-              {showDiff && <DiffViewer diff={task.diff} />}
+              {showDiff && <DiffViewer diff={task.diff_text ?? task.diff} />}
             </div>
           )}
           {task.demo_url && (
