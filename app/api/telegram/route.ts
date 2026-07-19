@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     if (text === '/start') {
       await sendMessage(
         chatId,
-        `👋 Welcome to Bopple! Connect your GitHub at ${appUrl}/connect?chat_id=${chatId}`
+        `👋 Welcome to Bopple!\n\nConnect your account: open Settings in the dashboard and send the \`/connect\` command shown there.`
       )
       return NextResponse.json({ ok: true })
     }
@@ -42,7 +42,54 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    // Link Telegram chat to a Bopple account via Settings connect token.
+    // Must run before telegram_chat_id lookup — first-time users aren't linked yet.
+    if (text.toLowerCase().startsWith('/connect ')) {
+      const token = text.slice('/connect '.length).trim()
+
+      if (!token) {
+        await sendMessage(
+          chatId,
+          '❌ Invalid or expired connect token. Get a new one from Settings.'
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      const { data: connectUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('telegram_connect_token', token)
+        .maybeSingle()
+
+      if (!connectUser) {
+        await sendMessage(
+          chatId,
+          '❌ Invalid or expired connect token. Get a new one from Settings.'
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      const { error: connectError } = await supabase
+        .from('users')
+        .update({ telegram_chat_id: chatId })
+        .eq('id', connectUser.id)
+
+      if (connectError) {
+        await sendMessage(
+          chatId,
+          `❌ Something went wrong: ${connectError.message}`
+        )
+        return NextResponse.json({ ok: true })
+      }
+
+      await sendMessage(
+        chatId,
+        '✅ Connected! You can now send me coding tasks.'
       )
       return NextResponse.json({ ok: true })
     }
@@ -56,7 +103,7 @@ export async function POST(req: NextRequest) {
     if (!user) {
       await sendMessage(
         chatId,
-        `Connect your account first: ${appUrl}/connect?chat_id=${chatId}`
+        `Connect your account first: open ${appUrl}/dashboard/settings and send the \`/connect\` command shown there.`
       )
       return NextResponse.json({ ok: true })
     }
