@@ -12,11 +12,11 @@ import {
 import type { AgentMessage } from '../lib/agent'
 import { runAgentLoop } from '../lib/agent'
 import {
-  cloneRepository,
   closeSandbox,
   commitAndPush,
   createSandboxSession,
-  createWorkBranch,
+  prepareRepo,
+  pushBranch,
   tryGenerateDemo,
 } from '../lib/sandbox'
 import type { AgentLogEntry, AgentLogType, User } from '../types'
@@ -244,37 +244,38 @@ export const codingAgentJob = task({
     await appendAgentLog(supabase, taskId, 'thinking', `Working on: ${promptPreview}`)
     await updateTelegramProgress(`🤔 Working on: ${promptPreview}`)
 
-    let session = null as Awaited<ReturnType<typeof createSandboxSession>> | null
+    let session: import('../lib/sandbox').SandboxSession | null = null
 
     try {
       const defaultBranch = await getDefaultBranch(githubToken, taskRow.repo_full_name)
       const branchName =
         taskRow.branch_name ?? `bopple/${taskId.slice(0, 8)}-${Date.now()}`
 
-      session = await createSandboxSession(taskRow.sandbox_id)
+      const { session: sandboxSession, resumed } = await createSandboxSession(
+        taskRow.sandbox_id
+      )
+      session = sandboxSession
       await appendAgentLog(supabase, taskId, 'thinking', 'Spinning up VM...')
 
-      if (feedback && taskRow.branch_name) {
-        await cloneRepository(
-          session,
-          taskRow.repo_full_name,
-          githubToken,
-          defaultBranch,
-          taskRow.branch_name
-        )
+      const prepared = await prepareRepo(
+        session,
+        taskRow.repo_full_name,
+        githubToken,
+        defaultBranch,
+        branchName,
+        {
+          resumed,
+          continueBranch: Boolean(feedback && taskRow.branch_name),
+        }
+      )
+
+      if (prepared.cloned) {
         await appendAgentLog(supabase, taskId, 'reading', 'Cloning repo...')
         await updateTelegramProgress('📖 Reading your codebase...')
-      } else {
-        await cloneRepository(
-          session,
-          taskRow.repo_full_name,
-          githubToken,
-          defaultBranch
-        )
-        await appendAgentLog(supabase, taskId, 'reading', 'Cloning repo...')
-        await updateTelegramProgress('📖 Reading your codebase...')
-        await createWorkBranch(session, branchName)
         await appendAgentLog(supabase, taskId, 'thinking', 'Creating work branch...')
+      } else {
+        await appendAgentLog(supabase, taskId, 'reading', 'Resuming existing VM checkout...')
+        await updateTelegramProgress('📖 Resuming your codebase...')
       }
 
       await supabase
@@ -321,12 +322,30 @@ export const codingAgentJob = task({
           agentResult.feedbackPrompt ?? 'Waiting for your feedback...'
         )
 
+        // Persist WIP so resume works even if the VM expires.
+        try {
+          await commitAndPush(
+            session,
+            githubToken,
+            `wip(bopple): awaiting feedback`,
+            branchName,
+            taskRow.repo_full_name
+          )
+        } catch {
+          try {
+            await pushBranch(session, githubToken, branchName, taskRow.repo_full_name)
+          } catch {
+            // Best-effort — sandbox resume can still recover local work.
+          }
+        }
+
         await supabase
           .from('tasks')
           .update({
             status: 'awaiting_feedback',
             conversation: updatedConversation,
             sandbox_id: session.sandbox.sandboxId,
+            branch_name: branchName,
           })
           .eq('id', taskId)
 

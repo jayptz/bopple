@@ -68,18 +68,18 @@ async function runCommand(
 
 export async function createSandboxSession(
   existingSandboxId?: string | null
-): Promise<SandboxSession> {
+): Promise<{ session: SandboxSession; resumed: boolean }> {
   if (existingSandboxId) {
     try {
       const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
-      return { sandbox, repoPath: REPO_PATH }
+      return { session: { sandbox, repoPath: REPO_PATH }, resumed: true }
     } catch {
       // Sandbox expired or not found, create a new one
     }
   }
 
   const sandbox = await Sandbox.create({ timeoutMs: 600_000 })
-  return { sandbox, repoPath: REPO_PATH }
+  return { session: { sandbox, repoPath: REPO_PATH }, resumed: false }
 }
 
 async function gitConfig(session: SandboxSession) {
@@ -90,33 +90,76 @@ async function gitConfig(session: SandboxSession) {
   )
 }
 
-export async function cloneRepository(
+export async function hasRepoCheckout(session: SandboxSession): Promise<boolean> {
+  const result = await runCommand(session, `test -d ${REPO_PATH}/.git`, {
+    timeoutMs: 15_000,
+    allowNonZero: true,
+  })
+  return result.exitCode === 0
+}
+
+/**
+ * Clone default branch and create a work branch.
+ * Never requires a bopple/* branch to already exist on origin — but will
+ * check it out from origin if a prior WIP push made it available.
+ */
+export async function prepareRepo(
   session: SandboxSession,
   repoFullName: string,
   githubToken: string,
   defaultBranch: string,
-  branchName?: string | null
+  branchName: string,
+  options?: { resumed?: boolean; continueBranch?: boolean }
+) {
+  const continueBranch = options?.continueBranch ?? false
+  const resumed = options?.resumed ?? false
+
+  if (continueBranch && resumed && (await hasRepoCheckout(session))) {
+    await gitConfig(session)
+    await createWorkBranch(session, branchName)
+    return { cloned: false }
+  }
+
+  await cloneRepository(session, repoFullName, githubToken, defaultBranch)
+
+  if (continueBranch) {
+    const remote = authCloneUrl(repoFullName, githubToken)
+    const checkoutRemote = await runInRepo(
+      session,
+      `git fetch ${shellQuote(remote)} ${shellQuote(branchName)} && git checkout -B ${shellQuote(branchName)} FETCH_HEAD`,
+      120_000,
+      { allowNonZero: true }
+    )
+
+    if (checkoutRemote.exitCode === 0) {
+      return { cloned: true }
+    }
+  }
+
+  await createWorkBranch(session, branchName)
+  return { cloned: true }
+}
+
+export async function cloneRepository(
+  session: SandboxSession,
+  repoFullName: string,
+  githubToken: string,
+  defaultBranch: string
 ) {
   const cloneUrl = authCloneUrl(repoFullName, githubToken)
-  const targetBranch = branchName || defaultBranch
 
   try {
     await runCommand(
       session,
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(targetBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(defaultBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`,
       { timeoutMs: 180_000 }
     )
-  } catch (error) {
-    // Fall back without --branch in case the named branch is missing/renamed.
-    if (!branchName) {
-      await runCommand(
-        session,
-        `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`,
-        { timeoutMs: 180_000 }
-      )
-    } else {
-      throw error
-    }
+  } catch {
+    await runCommand(
+      session,
+      `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+      { timeoutMs: 180_000 }
+    )
   }
 
   await gitConfig(session)
@@ -182,25 +225,38 @@ export async function commitAndPush(
 ) {
   const status = await runInRepo(session, 'git status --porcelain', 30_000)
   if (!status.stdout.trim()) {
+    // Still push the branch so feedback resumes can clone it later if needed.
+    await pushBranch(session, githubToken, branchName, repoFullName)
     return { pushed: false, filesChanged: 0 }
   }
 
   const remote = authCloneUrl(repoFullName, githubToken)
 
   await runInRepo(session, 'git add -A', 60_000)
+  await runInRepo(session, `git commit -m ${shellQuote(message)}`, 60_000)
   await runInRepo(
     session,
-    `git commit -m ${shellQuote(message)}`,
-    60_000
-  )
-  await runInRepo(
-    session,
-    `git push ${shellQuote(remote)} ${shellQuote(branchName)}`,
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
     180_000
   )
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
   return { pushed: true, filesChanged: fileCount }
+}
+
+/** Push the current branch to origin (creates remote branch if missing). */
+export async function pushBranch(
+  session: SandboxSession,
+  githubToken: string,
+  branchName: string,
+  repoFullName: string
+) {
+  const remote = authCloneUrl(repoFullName, githubToken)
+  await runInRepo(
+    session,
+    `git push -u ${shellQuote(remote)} ${shellQuote(branchName)}`,
+    180_000
+  )
 }
 
 export interface DemoResult {
