@@ -8,6 +8,7 @@ import {
   sendTaskFailed,
   sendTaskRunning,
   sendFeedbackRequest,
+  sendPhoto,
   upsertProgressMessage,
 } from '../lib/telegram'
 import type { AgentMessage } from '../lib/agent'
@@ -113,6 +114,11 @@ function toolLogFromCall(
       return {
         type: 'thinking',
         message: 'Asking for your input...',
+      }
+    case 'take_screenshot':
+      return {
+        type: 'running',
+        message: `Queuing screenshot of ${String(input.route ?? '/')}...`,
       }
     case 'complete_task':
       return {
@@ -409,16 +415,39 @@ export const codingAgentJob = task({
 
       const demo = await tryGenerateDemo(session)
 
+      // Best-effort screenshot: only when the user asked for one.
+      let screenshotUrl: string | null = null
+      if (agentResult.screenshotRoute && demo.demoUrl) {
+        try {
+          await appendAgentLog(
+            supabase,
+            taskId,
+            'running',
+            `Capturing screenshot of ${agentResult.screenshotRoute}...`
+          )
+          const { captureScreenshot, uploadScreenshot } = await import('../lib/screenshot')
+          const png = await captureScreenshot(demo.demoUrl, agentResult.screenshotRoute)
+          if (png) {
+            screenshotUrl = await uploadScreenshot(supabase, taskId, png)
+          }
+        } catch {
+          // Screenshot is optional — never block the PR on it.
+        }
+      }
+
       let prUrl = taskRow.pr_url
       let prNumber = taskRow.pr_number
 
       if (!prUrl) {
+        const previewSection = screenshotUrl
+          ? `\n\n## Preview\n\n![screenshot](${screenshotUrl})`
+          : ''
         const pr = await openPullRequest(
           githubToken,
           taskRow.repo_full_name,
           branchName,
           agentResult.prTitle,
-          `${agentResult.prBody}\n\n---\n*Created by [Bopple](https://bopple.dev)*`,
+          `${agentResult.prBody}${previewSection}\n\n---\n*Created by [Bopple](https://bopple.dev)*`,
           defaultBranch
         )
         prUrl = pr.url
@@ -440,6 +469,7 @@ export const codingAgentJob = task({
           diff_text: pushResult.diffText || null,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
+          screenshot_url: screenshotUrl,
           model_used: user.preferred_model,
           completed_at: new Date().toISOString(),
         })
@@ -458,6 +488,14 @@ export const codingAgentJob = task({
           )
         } catch {
           // Don't fail the job if Telegram notify fails
+        }
+      }
+
+      if (chatId && agentResult.screenshotRoute && screenshotUrl) {
+        try {
+          await sendPhoto(chatId, screenshotUrl, `📸 ${agentResult.prTitle}`)
+        } catch {
+          // Don't fail the job if the Telegram photo send fails
         }
       }
 

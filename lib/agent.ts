@@ -20,6 +20,8 @@ export interface AgentRunResult {
   summary: string
   needsFeedback: boolean
   feedbackPrompt: string | null
+  /** Route to capture when the user asked for a screenshot; otherwise null. */
+  screenshotRoute: string | null
 }
 
 const MAX_TURNS = 30
@@ -83,6 +85,21 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'take_screenshot',
+    description:
+      'Request a screenshot of the running app to send back to the user. ONLY call this when the user explicitly asks to see a screenshot / preview / visual of the change. The screenshot is captured automatically after the build — you do not need to start any server yourself. Call it after you have made the visual change.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        route: {
+          type: 'string',
+          description: 'Route/path to capture, e.g. "/" or "/login". Defaults to "/".',
+        },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'complete_task',
     description: 'Call when the coding task is finished and ready for commit.',
     input_schema: {
@@ -111,13 +128,19 @@ Rules:
 - Write production-quality code matching existing patterns
 - Prefer small, focused changes
 - Run tests if they exist
+- Only call take_screenshot when the user explicitly asks to see the change visually (a screenshot/preview). Never call it otherwise.
 - Never commit or push — that happens automatically after you call complete_task`
 
 async function executeTool(
   session: SandboxSession,
   name: string,
   input: Record<string, unknown>
-): Promise<{ output: string; needsFeedback?: boolean; completed?: AgentRunResult }> {
+): Promise<{
+  output: string
+  needsFeedback?: boolean
+  completed?: AgentRunResult
+  screenshotRoute?: string
+}> {
   switch (name) {
     case 'bash': {
       const command = String(input.command ?? '')
@@ -158,6 +181,14 @@ async function executeTool(
         return { output: `Error: could not list ${path}` }
       }
     }
+    case 'take_screenshot': {
+      const raw = String(input.route ?? '/').trim() || '/'
+      const route = raw.startsWith('/') ? raw : `/${raw}`
+      return {
+        output: `Screenshot of ${route} queued — it is captured and sent automatically after the build completes.`,
+        screenshotRoute: route,
+      }
+    }
     case 'ask_user': {
       const question = String(input.question ?? 'Need your input to continue.')
       return {
@@ -170,6 +201,7 @@ async function executeTool(
           summary: question,
           needsFeedback: true,
           feedbackPrompt: question,
+          screenshotRoute: null,
         },
       }
     }
@@ -183,6 +215,7 @@ async function executeTool(
           summary: String(input.summary ?? 'Task completed'),
           needsFeedback: false,
           feedbackPrompt: null,
+          screenshotRoute: null,
         },
       }
     }
@@ -221,6 +254,8 @@ export async function runAgentLoop(params: {
     content: m.content,
   }))
 
+  let screenshotRoute: string | null = null
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await client.messages.create({
       model,
@@ -248,6 +283,7 @@ export async function runAgentLoop(params: {
           summary: assistantText?.slice(0, 200) || 'Task completed',
           needsFeedback: false,
           feedbackPrompt: null,
+          screenshotRoute,
         }
       }
       break
@@ -265,10 +301,15 @@ export async function runAgentLoop(params: {
 
       const result = await executeTool(session, toolUse.name, input)
 
+      if (result.screenshotRoute) {
+        screenshotRoute = result.screenshotRoute
+      }
+
       if (result.completed?.needsFeedback) {
         return {
           ...result.completed,
           messages: transcript,
+          screenshotRoute,
         }
       }
 
@@ -276,6 +317,7 @@ export async function runAgentLoop(params: {
         return {
           ...result.completed,
           messages: transcript,
+          screenshotRoute,
         }
       }
 
@@ -297,5 +339,6 @@ export async function runAgentLoop(params: {
     summary: 'Agent turn limit reached',
     needsFeedback: false,
     feedbackPrompt: null,
+    screenshotRoute,
   }
 }

@@ -541,6 +541,21 @@ export function DashboardWorkspace() {
                 Live preview →
               </a>
             )}
+            {selectedTask?.screenshot_url && (
+              <a
+                href={selectedTask.screenshot_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={selectedTask.screenshot_url}
+                  alt="Screenshot of the change"
+                  className="w-full rounded-lg border border-zinc-800"
+                />
+              </a>
+            )}
             {codeMeta && (
               <pre className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-mono text-zinc-500 whitespace-pre-wrap">
                 {codeMeta}

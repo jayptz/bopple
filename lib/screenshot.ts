@@ -13,8 +13,7 @@ function toAbsoluteUrl(previewUrl: string, route: string): string {
 
 /**
  * Screenshot the running preview app. Returns a PNG buffer, or null if the page
- * couldn't be captured (server not ready, bad route, navigation timeout).
- * Playwright is imported lazily so it never enters the Next.js server bundle.
+ * couldn't be captured. Playwright is imported lazily so Next.js doesn't bundle it.
  */
 export async function captureScreenshot(
   previewUrl: string,
@@ -23,26 +22,8 @@ export async function captureScreenshot(
   const url = toAbsoluteUrl(previewUrl, route)
 
   try {
-    // Optional peer for Trigger workers — avoid hard type dependency in Next builds.
-    const playwright = (await import(
-      /* webpackIgnore: true */ 'playwright'
-    )) as {
-      chromium: {
-        launch: (opts: { args?: string[] }) => Promise<{
-          newPage: (opts: { viewport: { width: number; height: number } }) => Promise<{
-            goto: (
-              pageUrl: string,
-              opts: { waitUntil: 'networkidle'; timeout: number }
-            ) => Promise<unknown>
-            waitForTimeout: (ms: number) => Promise<void>
-            screenshot: (opts: { type: 'png'; fullPage: boolean }) => Promise<Buffer>
-          }>
-          close: () => Promise<void>
-        }>
-      }
-    }
-
-    const browser = await playwright.chromium.launch({ args: ['--no-sandbox'] })
+    const { chromium } = await import('playwright')
+    const browser = await chromium.launch({ args: ['--no-sandbox'] })
     try {
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       await page.goto(url, { waitUntil: 'networkidle', timeout: NAV_TIMEOUT_MS })
@@ -57,8 +38,7 @@ export async function captureScreenshot(
 }
 
 /**
- * Upload a PNG to the public `screenshots` storage bucket and return its public
- * URL, or null on failure. Uses the service-role client (bypasses RLS).
+ * Upload a PNG to the public `screenshots` storage bucket and return its public URL.
  */
 export async function uploadScreenshot(
   supabase: SupabaseClient,

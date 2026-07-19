@@ -61,6 +61,19 @@ export async function sendMessage(chatId: string, text: string): Promise<number 
   return data.result?.message_id ?? null
 }
 
+export async function sendPhoto(
+  chatId: string,
+  photoUrl: string,
+  caption?: string
+): Promise<void> {
+  await telegramRequest('sendPhoto', {
+    chat_id: chatId,
+    photo: photoUrl,
+    caption,
+    parse_mode: 'Markdown',
+  })
+}
+
 export async function editMessageText(
   chatId: string,
   messageId: number,
