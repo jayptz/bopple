@@ -121,7 +121,7 @@ async function executeTool(
   switch (name) {
     case 'bash': {
       const command = String(input.command ?? '')
-      const result = await runInRepo(session, command)
+      const result = await runInRepo(session, command, undefined, { allowNonZero: true })
       const output = [
         `exit code: ${result.exitCode}`,
         result.stdout ? `stdout:\n${result.stdout.slice(0, 8000)}` : '',

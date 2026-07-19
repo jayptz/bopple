@@ -46,7 +46,7 @@ function formatCommandError(command: string, error: unknown): Error {
 async function runCommand(
   session: SandboxSession,
   command: string,
-  options?: { cwd?: string; timeoutMs?: number }
+  options?: { cwd?: string; timeoutMs?: number; allowNonZero?: boolean }
 ) {
   try {
     return await session.sandbox.commands.run(command, {
@@ -55,6 +55,13 @@ async function runCommand(
       stdin: false,
     })
   } catch (error) {
+    if (options?.allowNonZero && error instanceof CommandExitError) {
+      return {
+        exitCode: error.exitCode,
+        stdout: error.stdout,
+        stderr: error.stderr,
+      }
+    }
     throw formatCommandError(command, error)
   }
 }
@@ -128,11 +135,13 @@ export async function createWorkBranch(session: SandboxSession, branchName: stri
 export async function runInRepo(
   session: SandboxSession,
   command: string,
-  timeoutMs = COMMAND_TIMEOUT_MS
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  options?: { allowNonZero?: boolean }
 ) {
   const result = await runCommand(session, command, {
     cwd: session.repoPath,
     timeoutMs,
+    allowNonZero: options?.allowNonZero,
   })
 
   return {
