@@ -170,19 +170,52 @@ export const codingAgentJob = task({
     const githubToken = user.github_access_token
       ? decrypt(user.github_access_token)
       : null
-    const anthropicKey = user.anthropic_api_key
-      ? decrypt(user.anthropic_api_key)
-      : undefined
-    const openaiKey = user.openai_api_key ? decrypt(user.openai_api_key) : undefined
+    let anthropicKey: string | undefined
+    let openaiKey: string | undefined
+
+    try {
+      anthropicKey = user.anthropic_api_key
+        ? decrypt(user.anthropic_api_key)
+        : undefined
+    } catch {
+      throw new Error(
+        'Failed to decrypt Anthropic API key. ENCRYPTION_KEY on Trigger.dev must match Vercel, then re-save your key in Settings.'
+      )
+    }
+
+    try {
+      openaiKey = user.openai_api_key ? decrypt(user.openai_api_key) : undefined
+    } catch {
+      throw new Error(
+        'Failed to decrypt OpenAI API key. ENCRYPTION_KEY on Trigger.dev must match Vercel, then re-save your key in Settings.'
+      )
+    }
 
     if (!githubToken) throw new Error('No GitHub token')
+
+    const usingByok = user.preferred_model.startsWith('gpt')
+      ? Boolean(openaiKey)
+      : Boolean(anthropicKey)
 
     const apiKey =
       user.preferred_model.startsWith('gpt')
         ? openaiKey ?? process.env.OPENAI_API_KEY
         : anthropicKey ?? process.env.ANTHROPIC_API_KEY
 
-    if (!apiKey) throw new Error('No API key configured')
+    if (!apiKey) {
+      throw new Error(
+        'No API key configured. Add ANTHROPIC_API_KEY in Trigger.dev Production env, or paste your key in Dashboard → Settings.'
+      )
+    }
+
+    if (
+      !user.preferred_model.startsWith('gpt') &&
+      !apiKey.startsWith('sk-ant-')
+    ) {
+      throw new Error(
+        `Anthropic API key looks invalid (source: ${usingByok ? 'Settings BYOK' : 'ANTHROPIC_API_KEY env'}). Re-save a valid sk-ant-… key.`
+      )
+    }
 
     const chatId = user.telegram_chat_id
     let progressMessageId: number | null = null

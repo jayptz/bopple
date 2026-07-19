@@ -62,19 +62,34 @@ export async function PATCH(request: Request) {
   }
 
   const body = (await request.json()) as {
-    anthropic_api_key?: string
-    openai_api_key?: string
+    anthropic_api_key?: string | null
+    openai_api_key?: string | null
     preferred_model?: string
+    clear_anthropic_api_key?: boolean
+    clear_openai_api_key?: boolean
   }
 
-  const updates: Record<string, string> = {}
+  const updates: Record<string, string | null> = {}
 
-  if (body.anthropic_api_key) {
-    updates.anthropic_api_key = encrypt(body.anthropic_api_key)
+  if (body.clear_anthropic_api_key) {
+    updates.anthropic_api_key = null
+  } else if (body.anthropic_api_key) {
+    const key = body.anthropic_api_key.trim()
+    if (!key.startsWith('sk-ant-')) {
+      return NextResponse.json(
+        { error: 'Anthropic key must start with sk-ant-' },
+        { status: 400 }
+      )
+    }
+    updates.anthropic_api_key = encrypt(key)
   }
-  if (body.openai_api_key) {
-    updates.openai_api_key = encrypt(body.openai_api_key)
+
+  if (body.clear_openai_api_key) {
+    updates.openai_api_key = null
+  } else if (body.openai_api_key) {
+    updates.openai_api_key = encrypt(body.openai_api_key.trim())
   }
+
   if (body.preferred_model) {
     updates.preferred_model = body.preferred_model
   }

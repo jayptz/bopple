@@ -1,4 +1,4 @@
-import { Sandbox } from 'e2b'
+import { CommandExitError, Sandbox } from 'e2b'
 
 const REPO_PATH = '/home/user/repo'
 const GIT_USER = 'Bopple Agent'
@@ -16,7 +16,52 @@ function authCloneUrl(repoFullName: string, githubToken: string) {
   return `https://x-access-token:${githubToken}@github.com/${repoFullName}.git`
 }
 
-export async function createSandboxSession(existingSandboxId?: string | null): Promise<SandboxSession> {
+function shellQuote(value: string) {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+function formatCommandError(command: string, error: unknown): Error {
+  if (error instanceof CommandExitError) {
+    const details = [error.stderr, error.stdout, error.error]
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+      .slice(0, 1500)
+
+    // Never leak the GitHub token if it appeared in the command string.
+    const safeCommand = command.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@')
+    return new Error(
+      `Command failed (exit ${error.exitCode}): ${safeCommand}` +
+        (details ? `\n${details}` : '')
+    )
+  }
+
+  if (error instanceof Error) {
+    return new Error(error.message.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@'))
+  }
+
+  return new Error('Command failed')
+}
+
+async function runCommand(
+  session: SandboxSession,
+  command: string,
+  options?: { cwd?: string; timeoutMs?: number }
+) {
+  try {
+    return await session.sandbox.commands.run(command, {
+      cwd: options?.cwd,
+      timeoutMs: options?.timeoutMs ?? COMMAND_TIMEOUT_MS,
+      stdin: false,
+    })
+  } catch (error) {
+    throw formatCommandError(command, error)
+  }
+}
+
+export async function createSandboxSession(
+  existingSandboxId?: string | null
+): Promise<SandboxSession> {
   if (existingSandboxId) {
     try {
       const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
@@ -25,7 +70,7 @@ export async function createSandboxSession(existingSandboxId?: string | null): P
       // Sandbox expired or not found, create a new one
     }
   }
-  
+
   const sandbox = await Sandbox.create({ timeoutMs: 600_000 })
   return { sandbox, repoPath: REPO_PATH }
 }
@@ -33,7 +78,7 @@ export async function createSandboxSession(existingSandboxId?: string | null): P
 async function gitConfig(session: SandboxSession) {
   await runInRepo(
     session,
-    `git config --global user.name "${GIT_USER}" && git config --global user.email "${GIT_EMAIL}"`,
+    `git config --global user.name ${shellQuote(GIT_USER)} && git config --global user.email ${shellQuote(GIT_EMAIL)}`,
     30_000
   )
 }
@@ -46,31 +91,48 @@ export async function cloneRepository(
   branchName?: string | null
 ) {
   const cloneUrl = authCloneUrl(repoFullName, githubToken)
+  const targetBranch = branchName || defaultBranch
 
-  if (branchName) {
-    await session.sandbox.commands.run(
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${branchName} ${cloneUrl} ${REPO_PATH}`,
-      { timeoutMs: 180_000, stdin: false }
+  try {
+    await runCommand(
+      session,
+      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${shellQuote(targetBranch)} ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+      { timeoutMs: 180_000 }
     )
-  } else {
-    await session.sandbox.commands.run(
-      `rm -rf ${REPO_PATH} && git clone --depth 1 --branch ${defaultBranch} ${cloneUrl} ${REPO_PATH}`,
-      { timeoutMs: 180_000, stdin: false }
-    )
+  } catch (error) {
+    // Fall back without --branch in case the named branch is missing/renamed.
+    if (!branchName) {
+      await runCommand(
+        session,
+        `rm -rf ${REPO_PATH} && git clone --depth 1 ${shellQuote(cloneUrl)} ${REPO_PATH}`,
+        { timeoutMs: 180_000 }
+      )
+    } else {
+      throw error
+    }
   }
 
   await gitConfig(session)
 }
 
 export async function createWorkBranch(session: SandboxSession, branchName: string) {
-  await runInRepo(session, `git checkout -b ${branchName}`, 30_000)
+  const quoted = shellQuote(branchName)
+  // Prefer creating a new branch; if it already exists, check it out.
+  try {
+    await runInRepo(session, `git checkout -b ${quoted}`, 30_000)
+  } catch {
+    await runInRepo(session, `git checkout ${quoted}`, 30_000)
+  }
 }
 
-export async function runInRepo(session: SandboxSession, command: string, timeoutMs = COMMAND_TIMEOUT_MS) {
-  const result = await session.sandbox.commands.run(command, {
+export async function runInRepo(
+  session: SandboxSession,
+  command: string,
+  timeoutMs = COMMAND_TIMEOUT_MS
+) {
+  const result = await runCommand(session, command, {
     cwd: session.repoPath,
     timeoutMs,
-    stdin: false,
   })
 
   return {
@@ -85,7 +147,11 @@ export async function readRepoFile(session: SandboxSession, relativePath: string
   return session.sandbox.files.read(fullPath)
 }
 
-export async function writeRepoFile(session: SandboxSession, relativePath: string, content: string) {
+export async function writeRepoFile(
+  session: SandboxSession,
+  relativePath: string,
+  content: string
+) {
   const fullPath = `${session.repoPath}/${relativePath.replace(/^\//, '')}`
   await session.sandbox.files.write(fullPath, content)
 }
@@ -110,12 +176,17 @@ export async function commitAndPush(
     return { pushed: false, filesChanged: 0 }
   }
 
-  const escapedMessage = message.replace(/"/g, '\\"')
   const remote = authCloneUrl(repoFullName, githubToken)
 
+  await runInRepo(session, 'git add -A', 60_000)
   await runInRepo(
     session,
-    `git add -A && git commit -m "${escapedMessage}" && git push ${remote} ${branchName}`,
+    `git commit -m ${shellQuote(message)}`,
+    60_000
+  )
+  await runInRepo(
+    session,
+    `git push ${shellQuote(remote)} ${shellQuote(branchName)}`,
     180_000
   )
 
@@ -147,14 +218,22 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
 
   if (scripts.test) {
     logs.push('=== npm test ===')
-    const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 180_000)
-    logs.push(test.stdout || test.stderr || '(no output)')
+    try {
+      const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 180_000)
+      logs.push(test.stdout || test.stderr || '(no output)')
+    } catch (error) {
+      logs.push(error instanceof Error ? error.message : 'test failed')
+    }
   }
 
   if (scripts.build) {
     logs.push('=== npm run build ===')
-    const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 180_000)
-    logs.push(build.stdout || build.stderr || '(no output)')
+    try {
+      const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 180_000)
+      logs.push(build.stdout || build.stderr || '(no output)')
+    } catch (error) {
+      logs.push(error instanceof Error ? error.message : 'build failed')
+    }
   }
 
   const devScript = scripts.dev ?? scripts.start
@@ -162,8 +241,15 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
     return { demoUrl: null, demoLogs: logs.join('\n\n') || 'No dev script found.' }
   }
 
-  const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 180_000)
-  logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
+  try {
+    const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 180_000)
+    logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
+  } catch (error) {
+    logs.push(
+      '=== npm install ===\n' + (error instanceof Error ? error.message : 'install failed')
+    )
+    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+  }
 
   const port = 3000
   logs.push(`=== starting dev server on :${port} ===`)
