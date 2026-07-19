@@ -21,14 +21,12 @@
     "next": "14.2.35",
     "node-telegram-bot-api": "^1.1.2",
     "openai": "^6.45.0",
-    "playwright": "^1.49.1",
     "react": "^18",
     "react-dom": "^18",
     "stripe": "^22.3.0",
     "ws": "^8.21.1"
   },
   "devDependencies": {
-    "@trigger.dev/build": "^4.5.4",
     "@types/node": "^20",
     "@types/node-telegram-bot-api": "^0.64.15",
     "@types/react": "^18",

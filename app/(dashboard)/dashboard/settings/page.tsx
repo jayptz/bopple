@@ -3,14 +3,14 @@
 import { useEffect, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { MODEL_OPTIONS } from '@/types'
+import { DEFAULT_MODEL, MODEL_OPTIONS } from '@/types'
 import type { User } from '@/types'
 
 export default function SettingsPage() {
   const [profile, setProfile] = useState<Partial<User> | null>(null)
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
-  const [model, setModel] = useState('claude-opus-4-8')
+  const [model, setModel] = useState(DEFAULT_MODEL)
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [connectToken, setConnectToken] = useState<string | null>(null)
@@ -129,6 +129,9 @@ export default function SettingsPage() {
                 {opt.label}
               </option>
             ))}
+            {!MODEL_OPTIONS.some((opt) => opt.value === model) && model && (
+              <option value={model}>{model} (saved)</option>
+            )}
           </select>
         </section>
 

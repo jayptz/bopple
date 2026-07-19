@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { DiffViewer } from '@/components/DiffViewer'
 import {
   AGENT_LOG_ICONS,
   type AgentLogEntry,
@@ -91,7 +90,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
   const [sending, setSending] = useState(false)
   const [resolving, setResolving] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [showDiff, setShowDiff] = useState(false)
+
   const canFeedback =
     task.status === 'awaiting_feedback' ||
     (task.status === 'running' && Boolean(task.pr_url))
@@ -196,22 +195,8 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
           </a>
           {task.files_changed != null && (
             <p className="text-xs text-zinc-500">
-              {task.files_changed} {task.files_changed === 1 ? 'file' : 'files'} changed
-              {task.lines_added != null && (
-                <span className="text-emerald-500"> +{task.lines_added}</span>
-              )}
+              {task.files_changed} files changed
             </p>
-          )}
-          {(task.diff_text ?? task.diff) && (
-            <div className="space-y-2">
-              <button
-                onClick={() => setShowDiff((v) => !v)}
-                className="text-xs text-zinc-400 hover:text-zinc-200"
-              >
-                {showDiff ? 'Hide diff' : 'View diff'}
-              </button>
-              {showDiff && <DiffViewer diff={task.diff_text ?? task.diff} />}
-            </div>
           )}
           {task.demo_url && (
             <a
@@ -224,22 +209,6 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
             </a>
           )}
         </div>
-      )}
-
-      {task.screenshot_url && (
-        <a
-          href={task.screenshot_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="block pt-2 border-t border-zinc-800"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={task.screenshot_url}
-            alt="Screenshot of the change"
-            className="w-full rounded-lg border border-zinc-800"
-          />
-        </a>
       )}
 
       {task.demo_logs && (

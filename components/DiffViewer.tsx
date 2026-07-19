@@ -1,5 +1,5 @@
 interface DiffViewerProps {
-  diff?: string | null
+  diff?: string
   placeholder?: string
 }
 
