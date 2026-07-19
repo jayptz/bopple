@@ -79,13 +79,29 @@ export default function DashboardPage() {
         body: JSON.stringify({ prompt: prompt.trim(), repo_id: selectedRepoId }),
       })
 
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string }
-        throw new Error(data.error ?? 'Failed to create task')
+      const raw = await res.text()
+      let data: { task?: Task; error?: string } = {}
+      if (raw) {
+        try {
+          data = JSON.parse(raw) as { task?: Task; error?: string }
+        } catch {
+          throw new Error(
+            res.ok
+              ? 'Invalid response from server'
+              : `Request failed (${res.status})`
+          )
+        }
       }
 
-      const data = (await res.json()) as { task: Task }
-      setTasks((prev) => [data.task, ...prev])
+      if (!res.ok) {
+        throw new Error(data.error ?? `Failed to create task (${res.status})`)
+      }
+
+      if (!data.task) {
+        throw new Error('Task was not returned from server')
+      }
+
+      setTasks((prev) => [data.task!, ...prev])
       setPrompt('')
       setShowModal(false)
     } catch (err) {

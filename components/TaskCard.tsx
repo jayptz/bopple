@@ -1,9 +1,9 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import type { Task } from '@/types'
+import { AGENT_LOG_ICONS, type AgentLogEntry, type Task } from '@/types'
 
 function timeAgo(date: string) {
   const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000)
@@ -20,6 +20,46 @@ interface TaskCardProps {
   onFeedbackSent?: () => void
 }
 
+function AgentActivityFeed({ logs }: { logs: AgentLogEntry[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const recent = logs.slice(-10)
+  const latestTimestamp = recent[recent.length - 1]?.timestamp
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (el) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [recent.length, latestTimestamp])
+
+  if (recent.length === 0) {
+    return (
+      <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs text-zinc-500">
+        Waiting for agent activity...
+      </div>
+    )
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      className="max-h-40 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 space-y-1.5 scroll-smooth"
+    >
+      {recent.map((log, index) => (
+        <div
+          key={`${log.timestamp}-${index}`}
+          className="flex items-start gap-2 text-xs text-zinc-300 font-mono"
+        >
+          <span className="shrink-0" aria-hidden>
+            {AGENT_LOG_ICONS[log.type]}
+          </span>
+          <span className="min-w-0 break-words">{log.message}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
   const [feedback, setFeedback] = useState('')
   const [sending, setSending] = useState(false)
@@ -28,6 +68,10 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
     task.status === 'awaiting_feedback' ||
     task.status === 'done' ||
     (task.status === 'running' && Boolean(task.pr_url))
+
+  const showActivity =
+    task.status === 'running' || task.status === 'awaiting_feedback'
+  const logs = task.agent_logs ?? []
 
   async function submitFeedback() {
     if (!feedback.trim()) return
@@ -69,6 +113,15 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
         <span>{timeAgo(task.created_at)}</span>
         {task.source === 'telegram' && <span>via Telegram</span>}
       </div>
+
+      {showActivity && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium text-zinc-400 uppercase tracking-wide">
+            Agent activity
+          </p>
+          <AgentActivityFeed logs={logs} />
+        </div>
+      )}
 
       {task.pr_url && (
         <div className="pt-2 border-t border-zinc-800 space-y-2">

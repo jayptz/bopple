@@ -23,13 +23,15 @@
     "openai": "^6.45.0",
     "react": "^18",
     "react-dom": "^18",
-    "stripe": "^22.3.0"
+    "stripe": "^22.3.0",
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/node-telegram-bot-api": "^0.64.15",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/ws": "^8.18.1",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "postcss": "^8",

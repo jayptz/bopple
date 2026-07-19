@@ -197,8 +197,16 @@ export async function runAgentLoop(params: {
   model: string
   apiKey: string
   priorMessages?: AgentMessage[]
+  onToolCall?: (toolName: string, input: Record<string, unknown>) => void | Promise<void>
 }): Promise<AgentRunResult> {
-  const { session, prompt, model, apiKey, priorMessages = [] } = params
+  const {
+    session,
+    prompt,
+    model,
+    apiKey,
+    priorMessages = [],
+    onToolCall,
+  } = params
   const client = new Anthropic({ apiKey })
 
   const transcript: AgentMessage[] = [...priorMessages]
@@ -250,11 +258,12 @@ export async function runAgentLoop(params: {
     for (const toolUse of toolUses) {
       if (toolUse.type !== 'tool_use') continue
 
-      const result = await executeTool(
-        session,
-        toolUse.name,
-        toolUse.input as Record<string, unknown>
-      )
+      const input = toolUse.input as Record<string, unknown>
+      if (onToolCall) {
+        await onToolCall(toolUse.name, input)
+      }
+
+      const result = await executeTool(session, toolUse.name, input)
 
       if (result.completed?.needsFeedback) {
         return {
