@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
@@ -39,6 +39,10 @@ function groupTasksByRepo(tasks: Task[], repos: Repo[]) {
   })
 }
 
+function mergeTask(prev: Task, next: Partial<Task> & { id: string }): Task {
+  return { ...prev, ...next }
+}
+
 export function DashboardWorkspace() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [repos, setRepos] = useState<Repo[]>([])
@@ -54,8 +58,32 @@ export function DashboardWorkspace() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mobilePane, setMobilePane] = useState<'sidebar' | 'chat' | 'code'>('chat')
+  const [fetchedDiff, setFetchedDiff] = useState<string | null>(null)
 
-  const supabase = createClient()
+  const chatEndRef = useRef<HTMLDivElement>(null)
+  const supabase = useMemo(() => createClient(), [])
+
+  function upsertTask(updated: Task) {
+    setTasks((prev) => {
+      const exists = prev.find((t) => t.id === updated.id)
+      if (exists) {
+        return prev.map((t) => (t.id === updated.id ? mergeTask(t, updated) : t))
+      }
+      return [updated, ...prev]
+    })
+  }
+
+  async function refreshTasks() {
+    try {
+      const res = await fetch('/api/tasks')
+      if (!res.ok) return
+      const data = (await res.json()) as { tasks: Task[] }
+      setTasks(data.tasks)
+      setSelectedTaskId((current) => current ?? data.tasks[0]?.id ?? null)
+    } catch {
+      // Keep existing state on transient fetch failures.
+    }
+  }
 
   useEffect(() => {
     async function load() {
@@ -78,7 +106,7 @@ export function DashboardWorkspace() {
       setLoading(false)
     }
 
-    load()
+    void load()
 
     const channel = supabase
       .channel('tasks-workspace')
@@ -86,32 +114,83 @@ export function DashboardWorkspace() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'tasks' },
         (payload) => {
-          const updated = payload.new as Task
-          setTasks((prev) => {
-            const exists = prev.find((t) => t.id === updated.id)
-            if (exists) {
-              return prev.map((t) => (t.id === updated.id ? updated : t))
+          if (payload.eventType === 'DELETE') {
+            const oldRow = payload.old as { id?: string }
+            if (oldRow.id) {
+              setTasks((prev) => prev.filter((t) => t.id !== oldRow.id))
             }
-            return [updated, ...prev]
-          })
+            return
+          }
+          const updated = payload.new as Task
+          if (!updated?.id) return
+          upsertTask(updated)
         }
       )
       .subscribe()
 
     return () => {
-      supabase.removeChannel(channel)
+      void supabase.removeChannel(channel)
     }
   }, [supabase])
+
+  // Poll while any task is active so logs/diff update without a manual refresh.
+  const hasActiveTask = tasks.some((t) => t.status === 'queued' || t.status === 'running')
+
+  useEffect(() => {
+    if (!hasActiveTask) return
+
+    const id = window.setInterval(() => {
+      void refreshTasks()
+    }, 2000)
+
+    return () => window.clearInterval(id)
+  }, [hasActiveTask])
 
   const selectedTask = useMemo(
     () => tasks.find((t) => t.id === selectedTaskId) ?? null,
     [tasks, selectedTaskId]
   )
 
+  // Backfill diff from GitHub for older tasks that predate diff_text.
+  useEffect(() => {
+    setFetchedDiff(null)
+    if (!selectedTask) return
+    if (selectedTask.diff_text) return
+    if (!selectedTask.pr_number) return
+
+    let cancelled = false
+    async function loadDiff() {
+      try {
+        const res = await fetch(`/api/tasks/${selectedTask!.id}/diff`)
+        if (!res.ok) return
+        const data = (await res.json()) as { diff?: string | null }
+        if (!cancelled && data.diff) {
+          setFetchedDiff(data.diff)
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === selectedTask!.id ? { ...t, diff_text: data.diff ?? null } : t
+            )
+          )
+        }
+      } catch {
+        // Ignore — panel will show placeholder.
+      }
+    }
+    void loadDiff()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedTask?.id, selectedTask?.diff_text, selectedTask?.pr_number])
+
+  // Auto-scroll chat as agent logs arrive.
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [selectedTask?.agent_logs?.length, selectedTask?.feedback_history?.length, selectedTask?.status])
+
   const grouped = useMemo(() => groupTasksByRepo(tasks, repos), [tasks, repos])
 
   function updateTask(updated: Task) {
-    setTasks((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+    upsertTask(updated)
   }
 
   async function createTask() {
@@ -187,21 +266,18 @@ export function DashboardWorkspace() {
         selectedTask.status !== 'done' &&
         selectedTask.status !== 'queued'))
 
-  const codePanel = selectedTask
+  const diffBody = selectedTask?.diff_text ?? fetchedDiff
+  const codeMeta = selectedTask
     ? [
         selectedTask.pr_title ? `# ${selectedTask.pr_title}` : null,
         selectedTask.branch_name ? `branch: ${selectedTask.branch_name}` : null,
         selectedTask.files_changed != null
           ? `files changed: ${selectedTask.files_changed}`
           : null,
-        '',
-        selectedTask.demo_logs
-          ? `--- demo logs ---\n${selectedTask.demo_logs}`
-          : 'Diff / file preview will appear here as the agent works.\n\nOpen the PR link for the full GitHub diff.',
       ]
-        .filter((line) => line !== null)
+        .filter((line): line is string => Boolean(line))
         .join('\n')
-    : undefined
+    : ''
 
   if (loading) {
     return (
@@ -381,6 +457,11 @@ export function DashboardWorkspace() {
                     {selectedTask.error_message}
                   </div>
                 )}
+
+                {(selectedTask.status === 'queued' || selectedTask.status === 'running') && (
+                  <p className="text-xs text-zinc-500 animate-pulse">Agent working...</p>
+                )}
+                <div ref={chatEndRef} />
               </div>
 
               <div className="border-t border-zinc-800 p-3 space-y-2">
@@ -448,20 +529,29 @@ export function DashboardWorkspace() {
               {selectedTask?.pr_title ?? selectedTask?.branch_name ?? 'No file selected'}
             </p>
           </header>
-          <div className="min-h-0 flex-1 overflow-auto p-3">
+          <div className="min-h-0 flex-1 overflow-auto p-3 space-y-3">
             {selectedTask?.demo_url && (
               <a
                 href={selectedTask.demo_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="mb-3 block text-xs text-blue-400 hover:underline"
+                className="block text-xs text-blue-400 hover:underline"
               >
                 Live preview →
               </a>
             )}
+            {codeMeta && (
+              <pre className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-[11px] font-mono text-zinc-500 whitespace-pre-wrap">
+                {codeMeta}
+              </pre>
+            )}
             <DiffViewer
-              diff={codePanel}
-              placeholder="Select a task to inspect branch, PR, and agent output."
+              diff={diffBody ?? undefined}
+              placeholder={
+                selectedTask?.status === 'queued' || selectedTask?.status === 'running'
+                  ? 'Diff will appear here as the agent edits files...'
+                  : 'No code changes yet. Open the PR for the full GitHub diff.'
+              }
             />
           </div>
         </aside>

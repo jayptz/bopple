@@ -27,6 +27,13 @@ const mockTasks: Task[] = [
     conversation: null,
     demo_url: null,
     demo_logs: null,
+    diff_text: `diff --git a/website/README.md b/website/README.md
+--- a/website/README.md
++++ b/website/README.md
+@@ -1,3 +1,4 @@
++<!-- hello from Bopple -->
+ # Website
+`,
     agent_logs: [
       { timestamp: new Date().toISOString(), type: 'thinking', message: 'Creating work branch...' },
       { timestamp: new Date().toISOString(), type: 'reading', message: 'Reading website/README.md...' },

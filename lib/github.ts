@@ -187,3 +187,29 @@ export async function getDefaultBranch(token: string, repoFullName: string): Pro
   const { data } = await octokit.repos.get({ owner, repo })
   return data.default_branch
 }
+
+/** Unified diff for an existing PR (for backfilling the code panel). */
+export async function getPullRequestDiff(
+  token: string,
+  repoFullName: string,
+  prNumber: number
+): Promise<string> {
+  const [owner, repo] = repoFullName.split('/')
+  const res = await fetch(
+    `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github.v3.diff',
+        'User-Agent': 'bopple',
+      },
+    }
+  )
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`Failed to fetch PR diff (${res.status}): ${body.slice(0, 200)}`)
+  }
+
+  return (await res.text()).slice(0, 100_000)
+}

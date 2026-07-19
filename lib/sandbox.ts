@@ -216,6 +216,26 @@ export async function listRepoDir(session: SandboxSession, relativePath = '.') {
   return session.sandbox.files.list(fullPath)
 }
 
+const DIFF_MAX_CHARS = 100_000
+
+/** Snapshot of current uncommitted changes (includes untracked via temporary stage). */
+export async function getWorkingDiff(session: SandboxSession): Promise<string> {
+  await runInRepo(session, 'git add -A', 60_000, { allowNonZero: true })
+  const diff = await runInRepo(session, 'git diff --cached', 60_000, {
+    allowNonZero: true,
+  })
+  // Unstage so the agent can keep editing; working tree stays intact.
+  await runInRepo(session, 'git reset HEAD', 30_000, { allowNonZero: true })
+  return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
+}
+
+export async function getLastCommitDiff(session: SandboxSession): Promise<string> {
+  const diff = await runInRepo(session, 'git show --format= --patch HEAD', 60_000, {
+    allowNonZero: true,
+  })
+  return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
+}
+
 export async function commitAndPush(
   session: SandboxSession,
   githubToken: string,
@@ -227,12 +247,16 @@ export async function commitAndPush(
   if (!status.stdout.trim()) {
     // Still push the branch so feedback resumes can clone it later if needed.
     await pushBranch(session, githubToken, branchName, repoFullName)
-    return { pushed: false, filesChanged: 0 }
+    const existing = await getLastCommitDiff(session).catch(() => '')
+    return { pushed: false, filesChanged: 0, diffText: existing }
   }
 
   const remote = authCloneUrl(repoFullName, githubToken)
 
   await runInRepo(session, 'git add -A', 60_000)
+  const stagedDiff = await runInRepo(session, 'git diff --cached', 60_000, {
+    allowNonZero: true,
+  })
   await runInRepo(session, `git commit -m ${shellQuote(message)}`, 60_000)
   await runInRepo(
     session,
@@ -241,7 +265,8 @@ export async function commitAndPush(
   )
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
-  return { pushed: true, filesChanged: fileCount }
+  const diffText = (stagedDiff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
+  return { pushed: true, filesChanged: fileCount, diffText }
 }
 
 /** Push the current branch to origin (creates remote branch if missing). */

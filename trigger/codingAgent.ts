@@ -15,6 +15,7 @@ import {
   closeSandbox,
   commitAndPush,
   createSandboxSession,
+  getWorkingDiff,
   prepareRepo,
   pushBranch,
   tryGenerateDemo,
@@ -303,6 +304,19 @@ export const codingAgentJob = task({
             hasLoggedWriting = true
             await updateTelegramProgress('✏️ Writing code...')
           }
+
+          // Keep the code panel in sync as files change.
+          if (toolName === 'write_file') {
+            try {
+              if (!session) return
+              const diffText = await getWorkingDiff(session)
+              if (diffText) {
+                await supabase.from('tasks').update({ diff_text: diffText }).eq('id', taskId)
+              }
+            } catch {
+              // Best-effort — don't block the agent on diff snapshots.
+            }
+          }
         },
       })
 
@@ -323,17 +337,20 @@ export const codingAgentJob = task({
         )
 
         // Persist WIP so resume works even if the VM expires.
+        let wipDiff = ''
         try {
-          await commitAndPush(
+          const wip = await commitAndPush(
             session,
             githubToken,
             `wip(bopple): awaiting feedback`,
             branchName,
             taskRow.repo_full_name
           )
+          wipDiff = wip.diffText
         } catch {
           try {
             await pushBranch(session, githubToken, branchName, taskRow.repo_full_name)
+            wipDiff = await getWorkingDiff(session).catch(() => '')
           } catch {
             // Best-effort — sandbox resume can still recover local work.
           }
@@ -346,6 +363,7 @@ export const codingAgentJob = task({
             conversation: updatedConversation,
             sandbox_id: session.sandbox.sandboxId,
             branch_name: branchName,
+            ...(wipDiff ? { diff_text: wipDiff } : {}),
           })
           .eq('id', taskId)
 
@@ -403,6 +421,7 @@ export const codingAgentJob = task({
           pr_number: prNumber,
           pr_title: agentResult.prTitle,
           files_changed: pushResult.filesChanged,
+          diff_text: pushResult.diffText || null,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
           model_used: user.preferred_model,
