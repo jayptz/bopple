@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
+import { sendTaskResolved } from '@/lib/telegram'
 
 export async function POST(
   _request: Request,
@@ -48,6 +49,20 @@ export async function POST(
 
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 })
+    }
+
+    const { data: profile } = await serviceClient
+      .from('users')
+      .select('telegram_chat_id')
+      .eq('id', user.id)
+      .single()
+
+    if (profile?.telegram_chat_id) {
+      try {
+        await sendTaskResolved(profile.telegram_chat_id)
+      } catch {
+        // Don't block resolve if Telegram notify fails
+      }
     }
 
     return NextResponse.json({ ok: true, task: updated })

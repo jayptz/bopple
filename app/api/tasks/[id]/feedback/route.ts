@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { tasks } from '@trigger.dev/sdk/v3'
 import { codingAgentJob } from '@/trigger/codingAgent'
+import { sendTaskQueued } from '@/lib/telegram'
 import type { FeedbackEntry } from '@/types'
 
 export async function POST(
@@ -29,7 +30,7 @@ export async function POST(
     const serviceClient = createServiceClient()
     const { data: task, error } = await serviceClient
       .from('tasks')
-      .select('id, status, feedback_history, user_id')
+      .select('id, status, feedback_history, user_id, prompt')
       .eq('id', id)
       .eq('user_id', user.id)
       .single()
@@ -64,6 +65,23 @@ export async function POST(
 
     if (updateError) {
       return NextResponse.json({ error: updateError.message }, { status: 500 })
+    }
+
+    const { data: profile } = await serviceClient
+      .from('users')
+      .select('telegram_chat_id')
+      .eq('id', user.id)
+      .single()
+
+    if (profile?.telegram_chat_id) {
+      try {
+        await sendTaskQueued(
+          profile.telegram_chat_id,
+          `Feedback received — continuing: ${feedback.slice(0, 80)}`
+        )
+      } catch {
+        // Don't block feedback if Telegram notify fails
+      }
     }
 
     await tasks.trigger(codingAgentJob.id, { taskId: id, feedback })

@@ -6,6 +6,7 @@ import { decrypt } from '../lib/crypto'
 import {
   sendTaskDone,
   sendTaskFailed,
+  sendTaskRunning,
   sendFeedbackRequest,
   upsertProgressMessage,
 } from '../lib/telegram'
@@ -241,9 +242,18 @@ export const codingAgentJob = task({
       })
       .eq('id', taskId)
 
+    // Mirror dashboard status=running in Telegram (same source of truth).
+    if (chatId) {
+      try {
+        progressMessageId = await sendTaskRunning(chatId, progressMessageId)
+      } catch {
+        // Don't fail the job if Telegram notify fails
+      }
+    }
+
     const promptPreview = String(taskRow.prompt).slice(0, 120)
     await appendAgentLog(supabase, taskId, 'thinking', `Working on: ${promptPreview}`)
-    await updateTelegramProgress(`🤔 Working on: ${promptPreview}`)
+    await updateTelegramProgress(`🔄 *Running*\n\nWorking on: ${promptPreview}`)
 
     let session: import('../lib/sandbox').SandboxSession | null = null
 
@@ -272,11 +282,13 @@ export const codingAgentJob = task({
 
       if (prepared.cloned) {
         await appendAgentLog(supabase, taskId, 'reading', 'Cloning repo...')
-        await updateTelegramProgress('📖 Reading your codebase...')
+        await updateTelegramProgress(
+          '🔄 *Running*\n\nCloning your repo and starting work...'
+        )
         await appendAgentLog(supabase, taskId, 'thinking', 'Creating work branch...')
       } else {
         await appendAgentLog(supabase, taskId, 'reading', 'Resuming existing VM checkout...')
-        await updateTelegramProgress('📖 Resuming your codebase...')
+        await updateTelegramProgress('🔄 *Running*\n\nResuming your codebase...')
       }
 
       await supabase
@@ -329,12 +341,11 @@ export const codingAgentJob = task({
       ]
 
       if (agentResult.needsFeedback) {
-        await appendAgentLog(
-          supabase,
-          taskId,
-          'thinking',
-          agentResult.feedbackPrompt ?? 'Waiting for your feedback...'
-        )
+        const feedbackQuestion =
+          agentResult.feedbackPrompt?.trim() ||
+          'I need a bit more info to continue. Reply in this chat.'
+
+        await appendAgentLog(supabase, taskId, 'thinking', feedbackQuestion)
 
         // Persist WIP so resume works even if the VM expires.
         let wipDiff = ''
@@ -367,8 +378,13 @@ export const codingAgentJob = task({
           })
           .eq('id', taskId)
 
-        if (user.telegram_chat_id && agentResult.feedbackPrompt) {
-          await sendFeedbackRequest(user.telegram_chat_id, agentResult.feedbackPrompt)
+        // Mirror dashboard status=awaiting_feedback with the real clarifying question.
+        if (chatId) {
+          try {
+            await sendFeedbackRequest(chatId, feedbackQuestion)
+          } catch {
+            // Don't fail the job if Telegram notify fails
+          }
         }
 
         await closeSandbox(session, true)
@@ -429,26 +445,32 @@ export const codingAgentJob = task({
         })
         .eq('id', taskId)
 
-      if (user.telegram_chat_id && prUrl) {
-        await sendTaskDone(
-          user.telegram_chat_id,
-          prUrl,
-          agentResult.prTitle,
-          pushResult.filesChanged,
-          demo.demoUrl ?? undefined,
-          progressMessageId
-        )
+      // Mirror dashboard completion fields (PR, files, demo) in Telegram.
+      if (chatId && prUrl) {
+        try {
+          await sendTaskDone(
+            chatId,
+            prUrl,
+            agentResult.prTitle,
+            pushResult.filesChanged,
+            demo.demoUrl ?? undefined,
+            progressMessageId
+          )
+        } catch {
+          // Don't fail the job if Telegram notify fails
+        }
       }
 
       await closeSandbox(session, true)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
+      const errorForUser = message.slice(0, 200)
 
       if (session) {
         await closeSandbox(session, false).catch(() => undefined)
       }
 
-      await appendAgentLog(supabase, taskId, 'thinking', `Failed: ${message.slice(0, 200)}`)
+      await appendAgentLog(supabase, taskId, 'thinking', `Failed: ${errorForUser}`)
 
       await supabase
         .from('tasks')
@@ -459,8 +481,13 @@ export const codingAgentJob = task({
         })
         .eq('id', taskId)
 
-      if (user.telegram_chat_id) {
-        await sendTaskFailed(user.telegram_chat_id, message)
+      // Mirror dashboard status=failed + error_message (truncated) in Telegram.
+      if (chatId) {
+        try {
+          await sendTaskFailed(chatId, errorForUser)
+        } catch {
+          // Don't fail the job if Telegram notify fails
+        }
       }
 
       throw error

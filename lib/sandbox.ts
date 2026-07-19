@@ -71,14 +71,14 @@ export async function createSandboxSession(
 ): Promise<{ session: SandboxSession; resumed: boolean }> {
   if (existingSandboxId) {
     try {
-      const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
+      const sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 900_000 })
       return { session: { sandbox, repoPath: REPO_PATH }, resumed: true }
     } catch {
       // Sandbox expired or not found, create a new one
     }
   }
 
-  const sandbox = await Sandbox.create({ timeoutMs: 600_000 })
+  const sandbox = await Sandbox.create({ timeoutMs: 900_000 })
   return { session: { sandbox, repoPath: REPO_PATH }, resumed: false }
 }
 
@@ -309,7 +309,7 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   if (scripts.test) {
     logs.push('=== npm test ===')
     try {
-      const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 180_000)
+      const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 300_000)
       logs.push(test.stdout || test.stderr || '(no output)')
     } catch (error) {
       logs.push(error instanceof Error ? error.message : 'test failed')
@@ -319,7 +319,7 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   if (scripts.build) {
     logs.push('=== npm run build ===')
     try {
-      const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 180_000)
+      const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 300_000)
       logs.push(build.stdout || build.stderr || '(no output)')
     } catch (error) {
       logs.push(error instanceof Error ? error.message : 'build failed')
@@ -332,7 +332,7 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   }
 
   try {
-    const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 180_000)
+    const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 300_000)
     logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
   } catch (error) {
     logs.push(

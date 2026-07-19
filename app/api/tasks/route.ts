@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { tasks } from '@trigger.dev/sdk/v3'
 import { codingAgentJob } from '@/trigger/codingAgent'
+import { sendTaskFailed, sendTaskQueued } from '@/lib/telegram'
 import type { User } from '@/types'
 
 export async function GET() {
@@ -115,6 +116,14 @@ export async function POST(request: Request) {
       .update({ tasks_used_this_month: typedProfile.tasks_used_this_month + 1 })
       .eq('id', user.id)
 
+    if (typedProfile.telegram_chat_id) {
+      try {
+        await sendTaskQueued(typedProfile.telegram_chat_id, body.prompt.trim())
+      } catch {
+        // Don't block task creation if Telegram notify fails
+      }
+    }
+
     try {
       const handle = await tasks.trigger(codingAgentJob.id, { taskId: task.id })
       await serviceClient
@@ -126,13 +135,22 @@ export async function POST(request: Request) {
         triggerError instanceof Error
           ? triggerError.message
           : 'Failed to start agent job'
+      const errorMessage = `Trigger failed: ${message}`
       await serviceClient
         .from('tasks')
         .update({
           status: 'failed',
-          error_message: `Trigger failed: ${message}`,
+          error_message: errorMessage,
         })
         .eq('id', task.id)
+
+      if (typedProfile.telegram_chat_id) {
+        try {
+          await sendTaskFailed(typedProfile.telegram_chat_id, errorMessage.slice(0, 200))
+        } catch {
+          // ignore
+        }
+      }
 
       return NextResponse.json(
         {
