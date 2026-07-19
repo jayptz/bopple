@@ -72,9 +72,15 @@ export interface Task {
   demo_url: string | null
   demo_logs: string | null
   agent_logs: AgentLogEntry[] | null
+  feedback_history: FeedbackEntry[] | null
   created_at: string
   started_at: string | null
   completed_at: string | null
+}
+
+export interface FeedbackEntry {
+  timestamp: string
+  message: string
 }
 
 export const MODEL_OPTIONS = [

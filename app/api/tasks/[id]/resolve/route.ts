@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
-import { tasks } from '@trigger.dev/sdk/v3'
-import { codingAgentJob } from '@/trigger/codingAgent'
-import type { FeedbackEntry } from '@/types'
 
 export async function POST(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -19,17 +16,10 @@ export async function POST(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = (await request.json()) as { feedback: string }
-    const feedback = body.feedback?.trim()
-
-    if (!feedback) {
-      return NextResponse.json({ error: 'Feedback is required' }, { status: 400 })
-    }
-
     const serviceClient = createServiceClient()
     const { data: task, error } = await serviceClient
       .from('tasks')
-      .select('id, status, feedback_history, user_id')
+      .select('id, status')
       .eq('id', id)
       .eq('user_id', user.id)
       .single()
@@ -38,24 +28,18 @@ export async function POST(
       return NextResponse.json({ error: 'Task not found' }, { status: 404 })
     }
 
-    if (!['awaiting_feedback', 'running', 'done'].includes(task.status)) {
+    if (['queued', 'running'].includes(task.status)) {
       return NextResponse.json(
-        { error: 'This task is not accepting feedback right now' },
+        { error: 'Wait for the agent to finish before resolving' },
         { status: 400 }
       )
     }
 
-    const entry: FeedbackEntry = {
-      timestamp: new Date().toISOString(),
-      message: feedback,
-    }
-    const history = [...((task.feedback_history as FeedbackEntry[] | null) ?? []), entry]
-
     const { data: updated, error: updateError } = await serviceClient
       .from('tasks')
       .update({
-        status: 'queued',
-        feedback_history: history,
+        status: 'done',
+        completed_at: new Date().toISOString(),
         error_message: null,
       })
       .eq('id', id)
@@ -66,11 +50,9 @@ export async function POST(
       return NextResponse.json({ error: updateError.message }, { status: 500 })
     }
 
-    await tasks.trigger(codingAgentJob.id, { taskId: id, feedback })
-
     return NextResponse.json({ ok: true, task: updated })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to send feedback'
+    const message = error instanceof Error ? error.message : 'Failed to resolve task'
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

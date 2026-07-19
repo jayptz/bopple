@@ -3,12 +3,6 @@ import Image from 'next/image'
 import { createClient } from '@/lib/supabase-server'
 import { redirect } from 'next/navigation'
 
-const navItems = [
-  { href: '/dashboard', label: 'Tasks' },
-  { href: '/dashboard/repos', label: 'Repos' },
-  { href: '/dashboard/settings', label: 'Settings' },
-]
-
 export default async function DashboardLayout({
   children,
 }: {
@@ -23,53 +17,37 @@ export default async function DashboardLayout({
 
   const { data: profile } = await supabase
     .from('users')
-    .select('github_username, github_avatar_url, tasks_used_this_month, tasks_limit')
+    .select('github_username, github_avatar_url, tasks_used_this_month')
     .eq('id', user.id)
     .single()
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto flex max-w-2xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-3">
-            <Link href="/dashboard" className="font-mono font-bold text-lg text-zinc-100">
-              Bopple
-            </Link>
-            <Link
-              href="/"
-              className="hidden text-xs text-zinc-500 hover:text-zinc-300 sm:inline"
-            >
-              Home
-            </Link>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-xs text-zinc-500 hidden sm:block">
-              {profile?.tasks_used_this_month ?? 0} tasks
-            </span>
-            {profile?.github_avatar_url && (
-              <Image
-                src={profile.github_avatar_url}
-                alt={profile.github_username}
-                width={28}
-                height={28}
-                className="h-7 w-7 rounded-full border border-zinc-700"
-              />
-            )}
-          </div>
+    <div className="flex h-dvh flex-col overflow-hidden bg-[#0c0c0e] text-zinc-100">
+      <header className="flex h-11 shrink-0 items-center justify-between border-b border-zinc-800 px-3">
+        <div className="flex items-center gap-3">
+          <Link href="/dashboard" className="font-mono text-sm font-bold text-zinc-100">
+            Bopple
+          </Link>
+          <Link href="/" className="text-xs text-zinc-500 hover:text-zinc-300">
+            Home
+          </Link>
         </div>
-        <nav className="mx-auto flex max-w-2xl gap-1 px-4 pb-2">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="rounded-lg px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100 transition-colors"
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
+        <div className="flex items-center gap-3">
+          <span className="hidden text-xs text-zinc-500 sm:inline">
+            {profile?.tasks_used_this_month ?? 0} tasks
+          </span>
+          {profile?.github_avatar_url && (
+            <Image
+              src={profile.github_avatar_url}
+              alt={profile.github_username}
+              width={24}
+              height={24}
+              className="h-6 w-6 rounded-full border border-zinc-700"
+            />
+          )}
+        </div>
       </header>
-      <main className="mx-auto max-w-2xl px-4 py-6">{children}</main>
+      <div className="min-h-0 flex-1">{children}</div>
     </div>
   )
 }

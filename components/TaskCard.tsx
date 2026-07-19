@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { AGENT_LOG_ICONS, type AgentLogEntry, type Task } from '@/types'
+import {
+  AGENT_LOG_ICONS,
+  type AgentLogEntry,
+  type FeedbackEntry,
+  type Task,
+} from '@/types'
 
 function timeAgo(date: string) {
   const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000)
@@ -17,7 +22,7 @@ function timeAgo(date: string) {
 
 interface TaskCardProps {
   task: Task
-  onFeedbackSent?: () => void
+  onTaskUpdated?: (task: Task) => void
 }
 
 function AgentActivityFeed({ logs }: { logs: AgentLogEntry[] }) {
@@ -60,18 +65,45 @@ function AgentActivityFeed({ logs }: { logs: AgentLogEntry[] }) {
   )
 }
 
-export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
+function FeedbackHistory({ entries }: { entries: FeedbackEntry[] }) {
+  if (entries.length === 0) return null
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs font-medium text-zinc-400 uppercase tracking-wide">
+        Previous feedback
+      </p>
+      <div className="max-h-36 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 space-y-2">
+        {entries.map((entry, index) => (
+          <div key={`${entry.timestamp}-${index}`} className="space-y-0.5">
+            <p className="text-[10px] text-zinc-600">{timeAgo(entry.timestamp)}</p>
+            <p className="text-xs text-zinc-300 whitespace-pre-wrap">{entry.message}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
   const [feedback, setFeedback] = useState('')
   const [sending, setSending] = useState(false)
+  const [resolving, setResolving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
   const canFeedback =
     task.status === 'awaiting_feedback' ||
-    task.status === 'done' ||
     (task.status === 'running' && Boolean(task.pr_url))
+
+  const showResolve =
+    task.status === 'awaiting_feedback' ||
+    task.status === 'failed' ||
+    (Boolean(task.pr_url) && task.status !== 'done' && task.status !== 'queued')
 
   const showActivity =
     task.status === 'running' || task.status === 'awaiting_feedback'
   const logs = task.agent_logs ?? []
+  const feedbackHistory = task.feedback_history ?? []
 
   async function submitFeedback() {
     if (!feedback.trim()) return
@@ -85,13 +117,23 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
         body: JSON.stringify({ feedback: feedback.trim() }),
       })
 
+      const data = (await res.json()) as { error?: string; task?: Task }
       if (!res.ok) {
-        const data = (await res.json()) as { error?: string }
         throw new Error(data.error ?? 'Failed to send feedback')
       }
 
       setFeedback('')
-      onFeedbackSent?.()
+      if (data.task) onTaskUpdated?.(data.task)
+      else {
+        onTaskUpdated?.({
+          ...task,
+          status: 'queued',
+          feedback_history: [
+            ...feedbackHistory,
+            { timestamp: new Date().toISOString(), message: feedback.trim() },
+          ],
+        })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send feedback')
     } finally {
@@ -99,12 +141,30 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
     }
   }
 
+  async function resolveTask() {
+    setResolving(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/resolve`, { method: 'POST' })
+      const data = (await res.json()) as { error?: string; task?: Task }
+      if (!res.ok) {
+        throw new Error(data.error ?? 'Failed to resolve task')
+      }
+      if (data.task) onTaskUpdated?.(data.task)
+      else onTaskUpdated?.({ ...task, status: 'done' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to resolve task')
+    } finally {
+      setResolving(false)
+    }
+  }
+
   return (
     <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-xs text-zinc-500 font-mono truncate">{task.repo_full_name}</p>
-          <p className="mt-1 text-sm text-zinc-200 line-clamp-2">{task.prompt}</p>
+          <p className="mt-0.5 text-sm text-zinc-200 line-clamp-2">{task.prompt}</p>
         </div>
         <Badge status={task.status} />
       </div>
@@ -157,23 +217,51 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
         </pre>
       )}
 
-      {canFeedback && (
-        <div className="pt-2 border-t border-zinc-800 space-y-2">
-          <label className="block text-xs font-medium text-zinc-400 uppercase tracking-wide">
-            Feedback
-          </label>
-          <textarea
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Make the button larger, add tests..."
-            rows={2}
-            className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-emerald-600 focus:outline-none resize-none"
-          />
+      {(canFeedback || feedbackHistory.length > 0) && (
+        <div className="pt-2 border-t border-zinc-800 space-y-3">
+          <FeedbackHistory entries={feedbackHistory} />
+
+          {canFeedback && (
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-zinc-400 uppercase tracking-wide">
+                Feedback
+              </label>
+              <textarea
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="e.g. use website/README.md and add <!-- hello --> at the top"
+                rows={2}
+                className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-emerald-600 focus:outline-none resize-none"
+              />
+            </div>
+          )}
+
           {error && <p className="text-xs text-red-400">{error}</p>}
-          <Button size="sm" onClick={submitFeedback} disabled={sending || !feedback.trim()}>
-            {sending ? 'Sending...' : 'Send feedback'}
-          </Button>
+
+          <div className="flex flex-wrap gap-2">
+            {canFeedback && (
+              <Button size="sm" onClick={submitFeedback} disabled={sending || !feedback.trim()}>
+                {sending ? 'Sending...' : 'Send feedback'}
+              </Button>
+            )}
+            {showResolve && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={resolveTask}
+                disabled={resolving}
+              >
+                {resolving ? 'Resolving...' : 'Mark resolved'}
+              </Button>
+            )}
+          </div>
         </div>
+      )}
+
+      {task.status === 'done' && (
+        <p className="text-xs text-emerald-500 border-t border-zinc-800 pt-2">
+          Resolved
+        </p>
       )}
 
       {task.status === 'failed' && task.error_message && (

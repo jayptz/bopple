@@ -83,10 +83,15 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-xl font-semibold text-zinc-100">Settings</h1>
-        <p className="text-sm text-zinc-500">API keys, model, Telegram, billing</p>
+    <div className="mx-auto h-full max-w-2xl space-y-8 overflow-y-auto px-4 py-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-zinc-100">Settings</h1>
+          <p className="text-sm text-zinc-500">API keys, model, Telegram, billing</p>
+        </div>
+        <a href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300">
+          ← Back
+        </a>
       </div>
 
       <section className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
