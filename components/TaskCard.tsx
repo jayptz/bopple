@@ -114,6 +114,22 @@ export function TaskCard({ task, onFeedbackSent }: TaskCardProps) {
         </div>
       )}
 
+      {task.screenshot_url && (
+        <a
+          href={task.screenshot_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="block pt-2 border-t border-zinc-800"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={task.screenshot_url}
+            alt="Screenshot of the change"
+            className="w-full rounded-lg border border-zinc-800"
+          />
+        </a>
+      )}
+
       {task.demo_logs && (
         <pre className="text-xs text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-lg p-2 overflow-x-auto max-h-32">
           {task.demo_logs.slice(0, 600)}

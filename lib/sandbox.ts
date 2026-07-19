@@ -17,9 +17,22 @@ function authCloneUrl(repoFullName: string, githubToken: string) {
 }
 
 export async function createSandboxSession(existingSandboxId?: string | null): Promise<SandboxSession> {
-  const sandbox = existingSandboxId
-    ? await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
-    : await Sandbox.create({ timeoutMs: 600_000 })
+  let sandbox: Sandbox | null = null
+
+  // Try to resume the stored sandbox, but fall back to a fresh one if it's gone.
+  // Paused sandboxes expire and failed runs kill theirs, so a stale sandbox_id
+  // must not be fatal — the work lives on the git branch, which we re-clone.
+  if (existingSandboxId) {
+    try {
+      sandbox = await Sandbox.connect(existingSandboxId, { timeoutMs: 600_000 })
+    } catch {
+      sandbox = null
+    }
+  }
+
+  if (!sandbox) {
+    sandbox = await Sandbox.create({ timeoutMs: 600_000 })
+  }
 
   return { sandbox, repoPath: REPO_PATH }
 }
@@ -164,43 +177,88 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   }
 
   const scripts = pkg.scripts ?? {}
-
-  if (scripts.test) {
-    logs.push('=== npm test ===')
-    const test = await runInRepo(session, 'npm test 2>&1 | tail -40', 180_000)
-    logs.push(test.stdout || test.stderr || '(no output)')
-  }
-
-  if (scripts.build) {
-    logs.push('=== npm run build ===')
-    const build = await runInRepo(session, 'npm run build 2>&1 | tail -40', 180_000)
-    logs.push(build.stdout || build.stderr || '(no output)')
-  }
-
   const devScript = scripts.dev ?? scripts.start
   if (!devScript) {
-    return { demoUrl: null, demoLogs: logs.join('\n\n') || 'No dev script found.' }
+    return { demoUrl: null, demoLogs: 'No dev/start script — nothing to preview.' }
   }
 
-  const install = await runInRepo(session, 'npm install 2>&1 | tail -20', 180_000)
-  logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
+  // Install deps only if needed, then boot the dev server. Deliberately lean (no
+  // test/build) so the preview fits the task budget. Every step is non-fatal: on
+  // failure we return demoUrl=null and the caller still opens the PR.
+  const hasModules = await runInRepo(
+    session,
+    'test -d node_modules && echo yes || echo no',
+    15_000
+  )
+    .then((r) => r.stdout.trim() === 'yes')
+    .catch(() => false)
 
-  const port = 3000
-  logs.push(`=== starting dev server on :${port} ===`)
+  if (hasModules) {
+    logs.push('=== npm install skipped (node_modules already present) ===')
+  } else {
+    try {
+      const install = await runInRepo(
+        session,
+        'npm install --no-audit --no-fund --progress=false 2>&1 | tail -20',
+        300_000
+      )
+      logs.push('=== npm install ===\n' + (install.stdout || install.stderr || ''))
+    } catch (e) {
+      logs.push('=== npm install failed/timed out ===\n' + (e instanceof Error ? e.message : String(e)))
+      return { demoUrl: null, demoLogs: logs.join('\n\n') }
+    }
+  }
 
   const scriptName = scripts.dev ? 'dev' : 'start'
-  await session.sandbox.commands.run(`npm run ${scriptName}`, {
-    cwd: session.repoPath,
-    background: true,
-    stdin: false,
-    envs: { PORT: String(port), HOST: '0.0.0.0' },
-    timeoutMs: 0,
-  })
+  const devLog = '/tmp/bopple-dev.log'
+  logs.push(`=== starting "${scriptName}" server ===`)
+  try {
+    // Tee the dev server's output to a file so we can report why it failed.
+    await session.sandbox.commands.run(`npm run ${scriptName} > ${devLog} 2>&1`, {
+      cwd: session.repoPath,
+      background: true,
+      stdin: false,
+      // Nudge frameworks that read PORT toward 3000; others (Vite→5173,
+      // Astro→4321, …) pick their own port, which we auto-detect below.
+      envs: { PORT: '3000', HOST: '0.0.0.0' },
+      timeoutMs: 0,
+    })
+  } catch (e) {
+    logs.push('dev server failed to start: ' + (e instanceof Error ? e.message : String(e)))
+    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+  }
 
-  await new Promise((resolve) => setTimeout(resolve, 8000))
+  // Wait for the server and discover which port it actually bound to — dev servers
+  // differ (Next/CRA→3000, Vite→5173, Astro→4321, Vite preview→4173, …). Probe the
+  // common ones until one answers. "Connection refused" on all of them means the
+  // app crashed on boot (e.g. it needs a database/env the sandbox doesn't have),
+  // so we skip the screenshot rather than shoot the sandbox's "port closed" page.
+  const detect = [
+    'for i in $(seq 1 45); do',
+    '  for p in 3000 5173 4321 4173 8080 5000 8000 3001 3002; do',
+    '    if curl -sf -o /dev/null "http://localhost:$p"; then echo "BOPPLE_PORT=$p"; exit 0; fi',
+    '  done',
+    '  sleep 2',
+    'done',
+  ].join('\n')
+  const detected = await runInRepo(session, detect, 110_000)
+    .then((r) => r.stdout.match(/BOPPLE_PORT=(\d+)/))
+    .catch(() => null)
 
+  if (!detected) {
+    const tail = await runInRepo(session, `tail -n 30 ${devLog} 2>/dev/null || true`, 15_000)
+      .then((r) => r.stdout.trim())
+      .catch(() => '')
+    logs.push(
+      'Dev server never responded on any common port — no preview captured.' +
+        (tail ? `\nLast dev-server output:\n${tail}` : '')
+    )
+    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+  }
+
+  const port = Number(detected[1])
   const demoUrl = session.sandbox.getHost(port)
-  logs.push(`Preview: ${demoUrl} (temporary sandbox VM)`)
+  logs.push(`Preview: ${demoUrl} (port ${port}, temporary sandbox VM)`)
 
   return { demoUrl, demoLogs: logs.join('\n\n') }
 }

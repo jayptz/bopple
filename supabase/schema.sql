@@ -75,6 +75,7 @@ create table if not exists public.tasks (
   conversation jsonb default '[]'::jsonb,
   demo_url text,
   demo_logs text,
+  screenshot_url text,
   created_at timestamptz default now(),
   started_at timestamptz,
   completed_at timestamptz

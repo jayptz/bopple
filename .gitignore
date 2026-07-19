@@ -32,6 +32,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# trigger.dev (local build output + dev state — never commit)
+/.trigger
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

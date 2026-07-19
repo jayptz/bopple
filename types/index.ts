@@ -58,6 +58,7 @@ export interface Task {
   conversation: { role: 'user' | 'assistant'; content: string }[] | null
   demo_url: string | null
   demo_logs: string | null
+  screenshot_url: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null
