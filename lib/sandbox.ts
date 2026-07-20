@@ -385,7 +385,57 @@ async function findAppDir(session: SandboxSession): Promise<{
   return null
 }
 
-async function startStaticServer(session: SandboxSession, port: number): Promise<string> {
+const SERVER_READY_MAX_ATTEMPTS = 30
+const SERVER_READY_POLL_MS = 1_000
+
+/**
+ * Poll localhost inside the sandbox until the port accepts HTTP connections.
+ * Any HTTP status (including 404/500) counts as ready; connection refused does not.
+ */
+async function waitForLocalPort(
+  session: SandboxSession,
+  port: number,
+  logs: string[]
+): Promise<boolean> {
+  const waitLogs: string[] = []
+
+  for (let attempt = 1; attempt <= SERVER_READY_MAX_ATTEMPTS; attempt++) {
+    waitLogs.push(
+      `Waiting for server on :${port} (attempt ${attempt}/${SERVER_READY_MAX_ATTEMPTS})...`
+    )
+
+    try {
+      const result = await runCommand(
+        session,
+        `curl -s -o /dev/null -w "%{http_code}" --connect-timeout 1 --max-time 2 http://127.0.0.1:${port}/`,
+        { allowNonZero: true, timeoutMs: 5_000 }
+      )
+      const code = (result.stdout ?? '').trim()
+      // curl returns "000" when the connection fails (refused / timed out).
+      if (/^[1-5]\d{2}$/.test(code)) {
+        waitLogs.push(`Server ready on :${port} (HTTP ${code})`)
+        logs.push(waitLogs.join('\n'))
+        return true
+      }
+    } catch {
+      // Treat probe failures as not-ready and keep polling.
+    }
+
+    if (attempt < SERVER_READY_MAX_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, SERVER_READY_POLL_MS))
+    }
+  }
+
+  waitLogs.push('Dev server did not start in time — skipped screenshot')
+  logs.push(waitLogs.join('\n'))
+  return false
+}
+
+async function startStaticServer(
+  session: SandboxSession,
+  port: number,
+  logs: string[]
+): Promise<string | null> {
   await session.sandbox.commands.run(
     `python3 -m http.server ${port} --bind 0.0.0.0`,
     {
@@ -395,7 +445,8 @@ async function startStaticServer(session: SandboxSession, port: number): Promise
       timeoutMs: 0,
     }
   )
-  await new Promise((resolve) => setTimeout(resolve, 3_000))
+  const ready = await waitForLocalPort(session, port, logs)
+  if (!ready) return null
   return session.sandbox.getHost(port)
 }
 
@@ -409,7 +460,10 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   if (!app) {
     logs.push('No package.json app found — serving repo root as static files.')
     try {
-      const demoUrl = await startStaticServer(session, port)
+      const demoUrl = await startStaticServer(session, port, logs)
+      if (!demoUrl) {
+        return { demoUrl: null, demoLogs: logs.join('\n\n') }
+      }
       logs.push(`Preview: ${demoUrl}`)
       return { demoUrl, demoLogs: logs.join('\n\n') }
     } catch (error) {
@@ -440,7 +494,10 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
   if (!scriptName) {
     logs.push('No dev/start/preview script — serving as static files.')
     try {
-      const demoUrl = await startStaticServer(session, port)
+      const demoUrl = await startStaticServer(session, port, logs)
+      if (!demoUrl) {
+        return { demoUrl: null, demoLogs: logs.join('\n\n') }
+      }
       logs.push(`Preview: ${demoUrl}`)
       return { demoUrl, demoLogs: logs.join('\n\n') }
     } catch (error) {
@@ -461,7 +518,10 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
     )
     // Still try static fallback from repo root.
     try {
-      const demoUrl = await startStaticServer(session, port)
+      const demoUrl = await startStaticServer(session, port, logs)
+      if (!demoUrl) {
+        return { demoUrl: null, demoLogs: logs.join('\n\n') }
+      }
       logs.push(`Install failed — fell back to static server: ${demoUrl}`)
       return { demoUrl, demoLogs: logs.join('\n\n') }
     } catch {
@@ -478,8 +538,10 @@ export async function tryGenerateDemo(session: SandboxSession): Promise<DemoResu
     timeoutMs: 0,
   })
 
-  // Give Next/Vite time to compile before Playwright hits the URL.
-  await new Promise((resolve) => setTimeout(resolve, 15_000))
+  const ready = await waitForLocalPort(session, port, logs)
+  if (!ready) {
+    return { demoUrl: null, demoLogs: logs.join('\n\n') }
+  }
 
   const demoUrl = session.sandbox.getHost(port)
   logs.push(`Preview: ${demoUrl}`)
