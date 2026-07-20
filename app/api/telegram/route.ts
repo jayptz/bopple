@@ -261,10 +261,7 @@ async function continueTaskWithFeedback(
   }
 
   await sendTypingAction(chatId).catch(() => undefined)
-  const queuedId = await sendTaskQueued(
-    chatId,
-    `your feedback on "${String(task.prompt).slice(0, 60)}"`
-  )
+  const queuedId = await sendTaskQueued(chatId, text, { isFollowUp: true })
   await appendTelegramMessageIds(supabase, task.id, [queuedId])
 
   await tasks.trigger(codingAgentJob.id, {

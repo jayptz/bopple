@@ -17,6 +17,7 @@ const mockTasks: Task[] = [
     pr_title: 'docs: add readme comment',
     files_changed: 1,
     lines_added: 1,
+    lines_removed: 0,
     error_message: null,
     source: 'dashboard',
     telegram_chat_id: null,

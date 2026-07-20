@@ -240,19 +240,66 @@ export async function getLastCommitDiff(session: SandboxSession): Promise<string
   return (diff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
 }
 
+export interface CommitPushResult {
+  pushed: boolean
+  filesChanged: number
+  linesAdded: number
+  linesRemoved: number
+  diffText: string
+}
+
+/** Parse `git diff --shortstat` output into line counts. */
+export function parseDiffShortstat(stdout: string): {
+  filesChanged: number
+  linesAdded: number
+  linesRemoved: number
+} {
+  const text = stdout.trim()
+  const filesMatch = text.match(/(\d+)\s+files?\s+changed/)
+  const addedMatch = text.match(/(\d+)\s+insertions?\(\+\)/)
+  const removedMatch = text.match(/(\d+)\s+deletions?\(-\)/)
+  return {
+    filesChanged: filesMatch ? Number(filesMatch[1]) : 0,
+    linesAdded: addedMatch ? Number(addedMatch[1]) : 0,
+    linesRemoved: removedMatch ? Number(removedMatch[1]) : 0,
+  }
+}
+
+async function getCommitShortstat(session: SandboxSession): Promise<{
+  filesChanged: number
+  linesAdded: number
+  linesRemoved: number
+}> {
+  const result = await runInRepo(session, 'git diff --shortstat HEAD~1 HEAD', COMMAND_TIMEOUT_MS, {
+    allowNonZero: true,
+  })
+  return parseDiffShortstat(result.stdout ?? '')
+}
+
 export async function commitAndPush(
   session: SandboxSession,
   githubToken: string,
   message: string,
   branchName: string,
   repoFullName: string
-) {
+): Promise<CommitPushResult> {
   const status = await runInRepo(session, 'git status --porcelain')
   if (!status.stdout.trim()) {
     // Still push the branch so feedback resumes can clone it later if needed.
     await pushBranch(session, githubToken, branchName, repoFullName)
     const existing = await getLastCommitDiff(session).catch(() => '')
-    return { pushed: false, filesChanged: 0, diffText: existing }
+    const stats = await getCommitShortstat(session).catch(() => ({
+      filesChanged: 0,
+      linesAdded: 0,
+      linesRemoved: 0,
+    }))
+    return {
+      pushed: false,
+      filesChanged: stats.filesChanged,
+      linesAdded: stats.linesAdded,
+      linesRemoved: stats.linesRemoved,
+      diffText: existing,
+    }
   }
 
   const remote = authCloneUrl(repoFullName, githubToken)
@@ -269,7 +316,18 @@ export async function commitAndPush(
 
   const fileCount = status.stdout.trim().split('\n').filter(Boolean).length
   const diffText = (stagedDiff.stdout ?? '').trim().slice(0, DIFF_MAX_CHARS)
-  return { pushed: true, filesChanged: fileCount, diffText }
+  const stats = await getCommitShortstat(session).catch(() => ({
+    filesChanged: fileCount,
+    linesAdded: 0,
+    linesRemoved: 0,
+  }))
+  return {
+    pushed: true,
+    filesChanged: stats.filesChanged || fileCount,
+    linesAdded: stats.linesAdded,
+    linesRemoved: stats.linesRemoved,
+    diffText,
+  }
 }
 
 /** Push the current branch to origin (creates remote branch if missing). */

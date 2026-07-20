@@ -273,7 +273,14 @@ export function DashboardWorkspace() {
         selectedTask.pr_title ? `# ${selectedTask.pr_title}` : null,
         selectedTask.branch_name ? `branch: ${selectedTask.branch_name}` : null,
         selectedTask.files_changed != null
-          ? `files changed: ${selectedTask.files_changed}`
+          ? [
+              `files changed: ${selectedTask.files_changed}`,
+              selectedTask.lines_added != null || selectedTask.lines_removed != null
+                ? `+${selectedTask.lines_added ?? 0} -${selectedTask.lines_removed ?? 0}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(' ')
           : null,
       ]
         .filter((line): line is string => Boolean(line))

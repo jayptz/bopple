@@ -16,9 +16,13 @@ export interface TaskTelegramSnapshot {
   pr_url?: string | null
   pr_title?: string | null
   files_changed?: number | null
+  lines_added?: number | null
+  lines_removed?: number | null
   demo_url?: string | null
   /** Clarifying question when status is awaiting_feedback without a PR yet. */
   feedback_question?: string | null
+  /** True when this is feedback continuing an existing PR/task. */
+  is_follow_up?: boolean
 }
 
 function getBotToken(): string {
@@ -178,58 +182,92 @@ export async function upsertProgressMessage(
   return sendMessage(chatId, text)
 }
 
+function formatFilesChangedLine(task: TaskTelegramSnapshot): string {
+  if (task.files_changed == null) return ''
+  const n = task.files_changed
+  const fileLabel = `${n} ${n === 1 ? 'file' : 'files'} changed`
+  const added = task.lines_added
+  const removed = task.lines_removed
+  if (added != null || removed != null) {
+    const plus = added ?? 0
+    const minus = removed ?? 0
+    return `${fileLabel}, +${plus} -${minus}`
+  }
+  return fileLabel
+}
+
 /** Format a Telegram message from the same task fields the dashboard reads. */
 export function formatTaskStatusMessage(task: TaskTelegramSnapshot): string {
   switch (task.status) {
     case 'queued': {
+      if (task.is_follow_up) {
+        return 'On it'
+      }
       const preview = task.prompt?.trim().slice(0, 100)
       return preview
         ? `On it — let me take a look at ${preview}`
-        : "On it — let me take a look."
+        : 'On it — let me take a look.'
     }
     case 'running':
-      return 'Working through your codebase now...'
+      return task.is_follow_up
+        ? 'Working on that now...'
+        : 'Working through your codebase now...'
     case 'awaiting_feedback': {
       if (task.pr_url) {
         const title = task.pr_title?.trim() || 'Pull request ready'
-        const files =
-          task.files_changed != null ? `\n\n${task.files_changed} files changed` : ''
-        let text = `✅ Done!\n\n*${title}*${files}\n\n[Review PR →](${task.pr_url})`
-        if (task.demo_url) {
-          text += `\n[Live Preview →](${task.demo_url})`
+        const files = formatFilesChangedLine(task)
+        let text = `Done\n\n*${title}*`
+        if (files) {
+          text += `\n${files}`
         }
-        text += '\n\n_Reply here with feedback and I\'ll keep going on the same branch._'
+        text += `\n\n[Review PR](${task.pr_url})`
+        if (task.demo_url) {
+          text += `\n[Live Preview](${task.demo_url})`
+        }
+        text += "\n\n_Reply here with feedback and I'll keep going on the same branch._"
         return text
       }
       const question =
         task.feedback_question?.trim() ||
         'I need a bit more info to continue. Reply in this chat.'
-      return `💬 ${question}\n\n_Just reply here — I\'ll pick it up on the same task._`
+      return `${question}\n\n_Just reply here — I'll pick it up on the same task._`
     }
     case 'done':
       return 'All set — marked this one resolved.'
     case 'failed': {
       const detail =
         task.error_message?.trim().slice(0, 200) || 'Something went wrong — check the dashboard.'
-      return `❌ Hit a snag:\n\n${detail}`
+      return `Hit a snag:\n\n${detail}`
     }
     default:
       return `Status: ${String((task as TaskTelegramSnapshot).status)}`
   }
 }
 
-export async function sendTaskQueued(chatId: string, prompt: string): Promise<number | null> {
+export async function sendTaskQueued(
+  chatId: string,
+  prompt: string,
+  options?: { isFollowUp?: boolean }
+): Promise<number | null> {
   return sendMessage(
     chatId,
-    formatTaskStatusMessage({ status: 'queued', prompt })
+    formatTaskStatusMessage({
+      status: 'queued',
+      prompt,
+      is_follow_up: options?.isFollowUp,
+    })
   )
 }
 
 export async function sendTaskRunning(
   chatId: string,
-  messageId?: number | null
+  messageId?: number | null,
+  options?: { isFollowUp?: boolean }
 ): Promise<number | null> {
-  const text = formatTaskStatusMessage({ status: 'running' })
+  const text = formatTaskStatusMessage({
+    status: 'running',
+    is_follow_up: options?.isFollowUp,
+  })
   if (messageId != null) {
     await editMessageText(chatId, messageId, text)
     return messageId
@@ -243,13 +281,17 @@ export async function sendTaskDone(
   prTitle: string,
   filesChanged: number,
   previewUrl?: string,
-  messageId?: number | null
+  messageId?: number | null,
+  linesAdded?: number | null,
+  linesRemoved?: number | null
 ): Promise<number | null> {
   const text = formatTaskStatusMessage({
     status: 'awaiting_feedback',
     pr_url: prUrl,
     pr_title: prTitle,
     files_changed: filesChanged,
+    lines_added: linesAdded ?? null,
+    lines_removed: linesRemoved ?? null,
     demo_url: previewUrl ?? null,
   })
 

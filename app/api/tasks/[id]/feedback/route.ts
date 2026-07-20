@@ -75,10 +75,7 @@ export async function POST(
 
     if (profile?.telegram_chat_id) {
       try {
-        await sendTaskQueued(
-          profile.telegram_chat_id,
-          `Feedback received — continuing: ${feedback.slice(0, 80)}`
-        )
+        await sendTaskQueued(profile.telegram_chat_id, feedback, { isFollowUp: true })
       } catch {
         // Don't block feedback if Telegram notify fails
       }
