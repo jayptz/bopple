@@ -501,6 +501,172 @@ function skipScreenshot(logs: string[], label: string, attempts: number, lastErr
   return { demoUrl: null, demoLogs: logs.join('\n\n') }
 }
 
+function looksLikeOomKill(exitCode: number | undefined, output: string): boolean {
+  if (exitCode === 137 || exitCode === 143) return true
+  return (
+    /\bkilled\b/i.test(output) ||
+    /out of memory|cannot allocate memory|\boom\b/i.test(output)
+  )
+}
+
+function describeInstallFailure(
+  command: string,
+  exitCode: number | undefined,
+  output: string
+): string {
+  const snippet = output.trim().slice(0, 400) || '(no output)'
+  if (looksLikeOomKill(exitCode, output)) {
+    return (
+      `${command} was killed by the OS (likely out of memory / OOM; exit ${exitCode ?? 'unknown'}). ` +
+      `Output: ${snippet}`
+    )
+  }
+  return `${command} failed (exit ${exitCode ?? 'unknown'}): ${snippet}`
+}
+
+async function hasNpmLockfile(session: SandboxSession, absPath: string): Promise<boolean> {
+  const result = await runCommand(
+    session,
+    'test -f package-lock.json || test -f npm-shrinkwrap.json',
+    { cwd: absPath, allowNonZero: true, timeoutMs: 10_000 }
+  )
+  return result.exitCode === 0
+}
+
+/**
+ * Install deps inside absPath only. On npm ci OOM, retry once with lower-memory flags.
+ */
+async function installDepsInScope(
+  session: SandboxSession,
+  absPath: string,
+  logs: string[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const useCi = await hasNpmLockfile(session, absPath)
+
+  if (!useCi) {
+    logs.push('No lockfile — using npm install')
+    try {
+      const install = await runCommand(session, 'npm install', {
+        cwd: absPath,
+        timeoutMs: COMMAND_TIMEOUT_MS,
+        allowNonZero: true,
+      })
+      const out = (install.stdout || install.stderr || '').trim().slice(-2500)
+      logs.push(`npm install exit ${install.exitCode}\n${out || '(no output)'}`)
+      if (install.exitCode !== 0) {
+        return {
+          ok: false,
+          error: describeInstallFailure('npm install', install.exitCode, out),
+        }
+      }
+      return { ok: true }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'npm install failed'
+      logs.push(detail)
+      return { ok: false, error: detail }
+    }
+  }
+
+  logs.push('Lockfile found — using npm ci')
+  try {
+    const first = await runCommand(session, 'npm ci', {
+      cwd: absPath,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      allowNonZero: true,
+    })
+    const firstOut = (first.stdout || first.stderr || '').trim().slice(-2500)
+    logs.push(`npm ci exit ${first.exitCode}\n${firstOut || '(no output)'}`)
+
+    if (first.exitCode === 0) {
+      return { ok: true }
+    }
+
+    if (looksLikeOomKill(first.exitCode, firstOut)) {
+      logs.push(
+        'npm ci was killed (likely OOM) — retrying once with --prefer-offline --no-audit --no-fund'
+      )
+      const retry = await runCommand(
+        session,
+        'npm ci --prefer-offline --no-audit --no-fund',
+        {
+          cwd: absPath,
+          timeoutMs: COMMAND_TIMEOUT_MS,
+          allowNonZero: true,
+        }
+      )
+      const retryOut = (retry.stdout || retry.stderr || '').trim().slice(-2500)
+      logs.push(
+        `npm ci --prefer-offline --no-audit --no-fund exit ${retry.exitCode}\n${retryOut || '(no output)'}`
+      )
+      if (retry.exitCode === 0) {
+        return { ok: true }
+      }
+      return {
+        ok: false,
+        error: describeInstallFailure(
+          'npm ci --prefer-offline --no-audit --no-fund',
+          retry.exitCode,
+          retryOut
+        ),
+      }
+    }
+
+    return {
+      ok: false,
+      error: describeInstallFailure('npm ci', first.exitCode, firstOut),
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'npm ci failed'
+    logs.push(detail)
+
+    if (looksLikeOomKill(undefined, detail)) {
+      logs.push(
+        'npm ci threw after kill (likely OOM) — retrying once with --prefer-offline --no-audit --no-fund'
+      )
+      try {
+        const retry = await runCommand(
+          session,
+          'npm ci --prefer-offline --no-audit --no-fund',
+          {
+            cwd: absPath,
+            timeoutMs: COMMAND_TIMEOUT_MS,
+            allowNonZero: true,
+          }
+        )
+        const retryOut = (retry.stdout || retry.stderr || '').trim().slice(-2500)
+        logs.push(
+          `npm ci --prefer-offline --no-audit --no-fund exit ${retry.exitCode}\n${retryOut || '(no output)'}`
+        )
+        if (retry.exitCode === 0) {
+          return { ok: true }
+        }
+        return {
+          ok: false,
+          error: describeInstallFailure(
+            'npm ci --prefer-offline --no-audit --no-fund',
+            retry.exitCode,
+            retryOut
+          ),
+        }
+      } catch (retryError) {
+        const retryDetail =
+          retryError instanceof Error ? retryError.message : 'npm ci retry failed'
+        logs.push(retryDetail)
+        return {
+          ok: false,
+          error: describeInstallFailure(
+            'npm ci --prefer-offline --no-audit --no-fund',
+            undefined,
+            retryDetail
+          ),
+        }
+      }
+    }
+
+    return { ok: false, error: detail }
+  }
+}
+
 /**
  * Spin up a preview server strictly inside workingScope.
  * Hard boundary: never install/build/dev at repo root when workingScope is a subdirectory,
@@ -555,29 +721,9 @@ export async function tryGenerateDemo(
 
   // --- Install once (never in a retry loop, never outside absPath) ---
   logs.push(`=== npm install/ci once in ${label} ===`)
-  const installCmd =
-    '(test -f package-lock.json || test -f npm-shrinkwrap.json) && npm ci || npm install'
-
-  try {
-    const install = await runCommand(session, installCmd, {
-      cwd: absPath,
-      timeoutMs: COMMAND_TIMEOUT_MS,
-      allowNonZero: true,
-    })
-    const installOut = (install.stdout || install.stderr || '').trim().slice(-2500)
-    logs.push(`npm install/ci exit ${install.exitCode}\n${installOut || '(no output)'}`)
-    if (install.exitCode !== 0) {
-      return skipScreenshot(
-        logs,
-        label,
-        1,
-        installOut.slice(0, 300) || `npm install/ci exited ${install.exitCode}`
-      )
-    }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'install failed'
-    logs.push(detail)
-    return skipScreenshot(logs, label, 1, detail)
+  const installResult = await installDepsInScope(session, absPath, logs)
+  if (!installResult.ok) {
+    return skipScreenshot(logs, label, 1, installResult.error)
   }
 
   // --- Build once (best-effort; `dev` may still work if build fails) ---
