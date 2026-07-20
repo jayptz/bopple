@@ -282,11 +282,15 @@ export const codingAgentJob = task({
       })
       .eq('id', taskId)
 
+    const isFollowUp = Boolean(feedback)
+
     // Mirror dashboard status=running in Telegram (same source of truth).
     if (chatId) {
       try {
         await sendTypingAction(chatId)
-        progressMessageId = await sendTaskRunning(chatId, progressMessageId)
+        progressMessageId = await sendTaskRunning(chatId, progressMessageId, {
+          isFollowUp,
+        })
         await rememberTelegramMessage(progressMessageId)
       } catch {
         // Don't fail the job if Telegram notify fails
@@ -296,9 +300,7 @@ export const codingAgentJob = task({
     const promptPreview = String(taskRow.prompt).slice(0, 120)
     await appendAgentLog(supabase, taskId, 'thinking', `Working on: ${promptPreview}`)
     await updateTelegramProgress(
-      feedback
-        ? `Got your feedback — continuing on the same branch...`
-        : `Working through your codebase now...`
+      isFollowUp ? 'On it' : 'Working through your codebase now...'
     )
 
     let session: import('../lib/sandbox').SandboxSession | null = null
@@ -566,6 +568,8 @@ export const codingAgentJob = task({
           pr_number: prNumber,
           pr_title: agentResult.prTitle,
           files_changed: pushResult.filesChanged,
+          lines_added: pushResult.linesAdded,
+          lines_removed: pushResult.linesRemoved,
           diff_text: pushResult.diffText || null,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
@@ -584,7 +588,9 @@ export const codingAgentJob = task({
             agentResult.prTitle,
             pushResult.filesChanged,
             demo.demoUrl ?? undefined,
-            progressMessageId
+            progressMessageId,
+            pushResult.linesAdded,
+            pushResult.linesRemoved
           )
           await rememberTelegramMessage(doneMsgId)
         } catch {
@@ -594,7 +600,7 @@ export const codingAgentJob = task({
 
       if (chatId && screenshotRoute && screenshotUrl) {
         try {
-          await sendPhoto(chatId, screenshotUrl, `📸 ${agentResult.prTitle}`)
+          await sendPhoto(chatId, screenshotUrl, agentResult.prTitle)
         } catch {
           // Don't fail the job if the Telegram photo send fails
         }
@@ -602,7 +608,7 @@ export const codingAgentJob = task({
         try {
           await sendMessage(
             chatId,
-            `⚠️ *PR is ready, but screenshot failed*\n\n${screenshotError.slice(0, 300)}`
+            `*PR is ready, but screenshot failed*\n\n${screenshotError.slice(0, 300)}`
           )
         } catch {
           // ignore

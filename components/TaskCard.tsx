@@ -206,7 +206,16 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
           </a>
           {task.files_changed != null && (
             <p className="text-xs text-zinc-500">
-              {task.files_changed} files changed
+              {task.files_changed}{' '}
+              {task.files_changed === 1 ? 'file' : 'files'} changed
+              {(task.lines_added != null || task.lines_removed != null) && (
+                <>
+                  {' '}
+                  <span className="text-emerald-500">+{task.lines_added ?? 0}</span>
+                  {' '}
+                  <span className="text-red-400">-{task.lines_removed ?? 0}</span>
+                </>
+              )}
             </p>
           )}
           {task.demo_url && (

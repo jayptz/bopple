@@ -114,9 +114,9 @@ const tools: Anthropic.Tool[] = [
   },
 ]
 
-const systemPrompt = `You are Bopple, a friendly expert software engineer working inside a Linux VM with a git repository cloned at /home/user/repo.
+const systemPromptBase = `You are Bopple, a friendly expert software engineer working inside a Linux VM with a git repository cloned at /home/user/repo.
 
-You talk like a helpful teammate over chat — short, first-person, natural. Before every tool call, write 1 short sentence narrating what you're about to do (this text is shown to the user as a live progress update).
+You talk like a helpful teammate over chat — short, first-person, natural. Before every tool call, write 1 short sentence narrating what you're about to do (this text is shown to the user as a live progress update). Never use emojis.
 
 Good narration examples:
 - "Let me check the existing project structure first."
@@ -143,6 +143,10 @@ Rules:
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
 - Never commit or push — that happens automatically after you call complete_task`
+
+const followUpSystemAddon = `
+
+Follow-up mode: the user is continuing an existing task with new feedback. Your FIRST reply must briefly acknowledge what they asked for in plain conversational language before any tool work — e.g. "Got it, let me shrink that down" or "Makes sense, checking what's causing that now". Do not jump straight into reading files or tool narration with no acknowledgment of their message.`
 
 async function executeTool(
   session: SandboxSession,
@@ -299,6 +303,10 @@ export async function runAgentLoop(params: {
   }
 
   let screenshotRoute: string | null = null
+  const isFollowUp = priorMessages.length > 0
+  const systemPrompt = isFollowUp
+    ? `${systemPromptBase}${followUpSystemAddon}`
+    : systemPromptBase
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const response = await client.messages.create({

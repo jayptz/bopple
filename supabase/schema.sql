@@ -64,6 +64,7 @@ create table if not exists public.tasks (
   pr_title text,
   files_changed integer,
   lines_added integer,
+  lines_removed integer,
   error_message text,
   source text default 'telegram' check (source in ('telegram', 'dashboard')),
   telegram_chat_id text,
