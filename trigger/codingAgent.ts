@@ -491,8 +491,12 @@ export const codingAgentJob = task({
 
       if (screenshotRoute) {
         if (!demo.demoUrl) {
-          screenshotError =
-            `Could not start a preview server.\n${demo.demoLogs.slice(0, 400)}`
+          const timeoutSkip = demo.demoLogs.includes(
+            'Dev server did not start in time — skipped screenshot'
+          )
+          screenshotError = timeoutSkip
+            ? 'Dev server did not start in time — skipped screenshot'
+            : `Could not start a preview server.\n${demo.demoLogs.slice(0, 400)}`
           await appendAgentLog(supabase, taskId, 'thinking', screenshotError.slice(0, 200))
         } else {
           try {
