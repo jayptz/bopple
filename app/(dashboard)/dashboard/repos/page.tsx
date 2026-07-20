@@ -27,9 +27,11 @@ export default function ReposPage() {
         const data = (await res.json()) as {
           repos: GitHubRepo[]
           github_username: string
+          saved_repo_ids: number[]
         }
         setGithubRepos(data.repos)
         setGithubUsername(data.github_username)
+        setSelected(new Set(data.saved_repo_ids ?? []))
       } catch {
         setMessage('Could not load GitHub repos. Try signing in again.')
       } finally {
@@ -106,40 +108,50 @@ export default function ReposPage() {
   function renderRepoList(repos: GitHubRepo[]) {
     return (
       <div className="space-y-2">
-        {repos.map((repo) => (
-          <label
-            key={repo.id}
-            className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
-              selected.has(repo.id)
-                ? 'border-emerald-700 bg-emerald-950/30'
-                : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={selected.has(repo.id)}
-              onChange={() => toggleRepo(repo.id)}
-              className="rounded border-zinc-700 bg-zinc-800 text-emerald-600 focus:ring-emerald-600"
-            />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-mono text-zinc-200">{repo.full_name}</p>
-              <p className="text-xs text-zinc-500">
-                {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
-              </p>
-            </div>
-          </label>
-        ))}
+        {repos.map((repo) => {
+          const isSaved = selected.has(repo.id)
+          return (
+            <label
+              key={repo.id}
+              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
+                isSaved
+                  ? 'border-emerald-700 bg-emerald-950/30'
+                  : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={isSaved}
+                onChange={() => toggleRepo(repo.id)}
+                className="rounded border-zinc-700 bg-zinc-800 text-emerald-600 focus:ring-emerald-600"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <p className="truncate text-sm font-mono text-zinc-200">{repo.full_name}</p>
+                  {isSaved && (
+                    <span className="shrink-0 rounded border border-emerald-800/80 bg-emerald-950/50 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-400">
+                      Connected
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-500">
+                  {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
+                </p>
+              </div>
+            </label>
+          )
+        })}
       </div>
     )
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto px-4 py-6 h-full">
+    <div className="mx-auto h-full max-w-2xl space-y-6 overflow-y-auto px-4 py-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold text-zinc-100">Repos</h1>
           <p className="text-sm text-zinc-500">
-            Select which repos Bopple can work on.
+            Select which repos Bopple can work on. Connected repos stay checked.
           </p>
         </div>
         <Link href="/dashboard" className="text-xs text-zinc-500 hover:text-zinc-300">

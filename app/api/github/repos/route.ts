@@ -27,9 +27,19 @@ export async function GET() {
   try {
     const token = decrypt(profile.github_access_token)
     const repos = await getUserRepos(token)
+
+    const { data: savedRows } = await serviceClient
+      .from('repos')
+      .select('github_repo_id, is_active')
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+
+    const saved_repo_ids = (savedRows ?? []).map((r) => r.github_repo_id as number)
+
     return NextResponse.json({
       repos,
       github_username: profile.github_username as string,
+      saved_repo_ids,
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to fetch repos'
