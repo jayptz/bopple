@@ -27,6 +27,123 @@ type ContinuableTask = {
   telegram_message_ids: number[] | null
 }
 
+type ConnectedRepo = {
+  id: string
+  full_name: string
+  name: string
+}
+
+/** Words that often follow on/in/for but are not repo names. */
+const REPO_HINT_STOPWORDS = new Set([
+  'the',
+  'a',
+  'an',
+  'my',
+  'your',
+  'our',
+  'their',
+  'this',
+  'that',
+  'these',
+  'those',
+  'it',
+  'me',
+  'us',
+  'code',
+  'codebase',
+  'repo',
+  'repository',
+  'project',
+  'app',
+  'file',
+  'files',
+  'folder',
+  'page',
+  'pages',
+  'website',
+  'readme',
+  'pr',
+  'branch',
+  'main',
+  'master',
+  'here',
+  'there',
+  'general',
+  'production',
+  'staging',
+  'dashboard',
+  'settings',
+])
+
+function shortRepoName(fullName: string): string {
+  const parts = fullName.split('/')
+  return (parts[parts.length - 1] ?? fullName).toLowerCase()
+}
+
+/**
+ * Resolve which connected repo a natural-language Telegram message refers to.
+ * Matches short names (e.g. "bopple" from "jayptz/bopple") as whole words.
+ */
+function resolveRepoFromMessage(
+  message: string,
+  connected: ConnectedRepo[]
+):
+  | { status: 'matched'; repo: ConnectedRepo }
+  | { status: 'default' }
+  | { status: 'ambiguous'; repos: ConnectedRepo[] }
+  | { status: 'unknown'; name: string } {
+  if (connected.length === 0) return { status: 'default' }
+
+  const lower = message.toLowerCase()
+
+  // Prefer longer names first so "my-app-web" wins over "web".
+  const byName = [...connected].sort(
+    (a, b) => shortRepoName(b.full_name).length - shortRepoName(a.full_name).length
+  )
+
+  const matched: ConnectedRepo[] = []
+  const seenIds = new Set<string>()
+
+  for (const repo of byName) {
+    const short = shortRepoName(repo.full_name)
+    if (!short) continue
+
+    // Whole-word / boundary-ish match; allow hyphens/underscores/dots in the name.
+    const escaped = short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const wholeWord = new RegExp(`(?:^|[^a-z0-9_])${escaped}(?:[^a-z0-9_]|$)`, 'i')
+    const fullEscaped = repo.full_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const fullName = new RegExp(`(?:^|[^a-z0-9_])${fullEscaped}(?:[^a-z0-9_]|$)`, 'i')
+
+    if (wholeWord.test(lower) || fullName.test(lower)) {
+      if (!seenIds.has(repo.id)) {
+        seenIds.add(repo.id)
+        matched.push(repo)
+      }
+    }
+  }
+
+  if (matched.length === 1) return { status: 'matched', repo: matched[0] }
+  if (matched.length > 1) return { status: 'ambiguous', repos: matched }
+
+  // No connected repo found — check explicit "on/in/for <name>" hints for typos.
+  const hintRe = /\b(?:on|in|for)\s+([a-z0-9][a-z0-9._-]*)\b/gi
+  const hints: string[] = []
+  let hintMatch: RegExpExecArray | null
+  while ((hintMatch = hintRe.exec(lower)) !== null) {
+    const name = hintMatch[1]
+    if (!REPO_HINT_STOPWORDS.has(name)) hints.push(name)
+  }
+
+  const connectedShort = new Set(connected.map((r) => shortRepoName(r.full_name)))
+  for (const hint of hints) {
+    if (!connectedShort.has(hint)) {
+      return { status: 'unknown', name: hint }
+    }
+  }
+
+  return { status: 'default' }
+}
+
 async function appendTelegramMessageIds(
   supabase: ReturnType<typeof createServiceClient>,
   taskId: string,
@@ -175,7 +292,7 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
       )
       return NextResponse.json({ ok: true })
     }
@@ -256,22 +373,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const { data: repo } = await supabase
+    const { data: connectedRepos } = await supabase
       .from('repos')
-      .select('id, full_name')
+      .select('id, full_name, name')
       .eq('user_id', user.id)
       .eq('is_active', true)
       .order('created_at', { ascending: true })
-      .limit(1)
-      .maybeSingle()
 
-    if (!repo) {
+    const repos = (connectedRepos ?? []) as ConnectedRepo[]
+
+    if (repos.length === 0) {
       await sendMessage(
         chatId,
         '⚠️ No active repo. Connect one in the Bopple dashboard first.'
       )
       return NextResponse.json({ ok: true })
     }
+
+    const resolved = resolveRepoFromMessage(taskText, repos)
+
+    if (resolved.status === 'ambiguous') {
+      const options = resolved.repos.map((r) => r.full_name).join(' or ')
+      await sendMessage(chatId, `Did you mean ${options}?`)
+      return NextResponse.json({ ok: true })
+    }
+
+    if (resolved.status === 'unknown') {
+      await sendMessage(
+        chatId,
+        `I don't see a repo called ${resolved.name} connected. Add it in the dashboard first.`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    const repo =
+      resolved.status === 'matched'
+        ? resolved.repo
+        : repos[0]
 
     const { data: task, error: taskError } = await supabase
       .from('tasks')

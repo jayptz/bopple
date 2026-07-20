@@ -8,8 +8,9 @@ export async function getUserRepos(token: string) {
   const octokit = getOctokit(token)
   const { data } = await octokit.repos.listForAuthenticatedUser({
     sort: 'updated',
-    per_page: 50,
-    affiliation: 'owner',
+    per_page: 100,
+    // Owner + collaborator + org membership; includes forks the user can push to.
+    affiliation: 'owner,collaborator,organization_member',
   })
   return data
 }
