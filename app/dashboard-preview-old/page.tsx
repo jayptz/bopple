@@ -35,6 +35,7 @@ const mockTasks: Task[] = [
  # Website
 `,
     screenshot_url: null,
+    telegram_message_ids: [],
     agent_logs: [
       { timestamp: new Date().toISOString(), type: 'thinking', message: 'Creating work branch...' },
       { timestamp: new Date().toISOString(), type: 'reading', message: 'Reading website/README.md...' },

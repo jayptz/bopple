@@ -78,6 +78,7 @@ create table if not exists public.tasks (
   screenshot_url text,
   agent_logs jsonb default '[]'::jsonb,
   feedback_history jsonb default '[]'::jsonb,
+  telegram_message_ids jsonb default '[]'::jsonb,
   created_at timestamptz default now(),
   started_at timestamptz,
   completed_at timestamptz
@@ -99,6 +100,7 @@ alter table public.tasks add column if not exists agent_logs jsonb default '[]':
 alter table public.tasks add column if not exists feedback_history jsonb default '[]'::jsonb;
 alter table public.tasks add column if not exists diff_text text;
 alter table public.tasks add column if not exists screenshot_url text;
+alter table public.tasks add column if not exists telegram_message_ids jsonb default '[]'::jsonb;
 
 -- Atomic append for agent activity logs
 create or replace function public.append_agent_log(

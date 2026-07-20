@@ -61,6 +61,18 @@ export async function sendMessage(chatId: string, text: string): Promise<number 
   return data.result?.message_id ?? null
 }
 
+/** Show the Telegram "typing…" indicator while the agent works. */
+export async function sendTypingAction(chatId: string): Promise<void> {
+  try {
+    await telegramRequest('sendChatAction', {
+      chat_id: chatId,
+      action: 'typing',
+    })
+  } catch {
+    // Never block the agent on typing indicators.
+  }
+}
+
 export async function sendPhoto(
   chatId: string,
   photoUrl: string,
@@ -112,44 +124,44 @@ export async function upsertProgressMessage(
 export function formatTaskStatusMessage(task: TaskTelegramSnapshot): string {
   switch (task.status) {
     case 'queued': {
-      const preview = task.prompt?.trim().slice(0, 120)
+      const preview = task.prompt?.trim().slice(0, 100)
       return preview
-        ? `⏳ *Queued*\n\nGot it: ${preview}\n\nI'll update you as the agent works.`
-        : "⏳ *Queued*\n\nGot it. I'll update you as the agent works."
+        ? `On it — let me take a look at ${preview}`
+        : "On it — let me take a look."
     }
     case 'running':
-      return '🔄 *Running*\n\nCloning your repo and starting work...'
+      return 'Working through your codebase now...'
     case 'awaiting_feedback': {
       if (task.pr_url) {
         const title = task.pr_title?.trim() || 'Pull request ready'
         const files =
           task.files_changed != null ? `\n\n${task.files_changed} files changed` : ''
-        let text = `✅ *Done*\n\n*${title}*${files}\n\n[Review PR →](${task.pr_url})`
+        let text = `✅ Done!\n\n*${title}*${files}\n\n[Review PR →](${task.pr_url})`
         if (task.demo_url) {
           text += `\n[Live Preview →](${task.demo_url})`
         }
-        text += '\n\n_Reply here with feedback, or mark resolved in the dashboard._'
+        text += '\n\n_Reply here with feedback and I\'ll keep going on the same branch._'
         return text
       }
       const question =
         task.feedback_question?.trim() ||
         'I need a bit more info to continue. Reply in this chat.'
-      return `💬 *Needs input*\n\n${question}\n\n_Reply to this chat to continue._`
+      return `💬 ${question}\n\n_Just reply here — I\'ll pick it up on the same task._`
     }
     case 'done':
-      return '✅ *Resolved*\n\nThis task is marked done.'
+      return 'All set — marked this one resolved.'
     case 'failed': {
       const detail =
-        task.error_message?.trim().slice(0, 200) || 'Unknown error — check the dashboard.'
-      return `❌ *Failed*\n\n${detail}`
+        task.error_message?.trim().slice(0, 200) || 'Something went wrong — check the dashboard.'
+      return `❌ Hit a snag:\n\n${detail}`
     }
     default:
       return `Status: ${String((task as TaskTelegramSnapshot).status)}`
   }
 }
 
-export async function sendTaskQueued(chatId: string, prompt: string): Promise<void> {
-  await sendMessage(
+export async function sendTaskQueued(chatId: string, prompt: string): Promise<number | null> {
+  return sendMessage(
     chatId,
     formatTaskStatusMessage({ status: 'queued', prompt })
   )
@@ -174,7 +186,7 @@ export async function sendTaskDone(
   filesChanged: number,
   previewUrl?: string,
   messageId?: number | null
-): Promise<void> {
+): Promise<number | null> {
   const text = formatTaskStatusMessage({
     status: 'awaiting_feedback',
     pr_url: prUrl,
@@ -185,14 +197,14 @@ export async function sendTaskDone(
 
   if (messageId != null) {
     await editMessageText(chatId, messageId, text)
-    return
+    return messageId
   }
 
-  await sendMessage(chatId, text)
+  return sendMessage(chatId, text)
 }
 
-export async function sendTaskFailed(chatId: string, error: string): Promise<void> {
-  await sendMessage(
+export async function sendTaskFailed(chatId: string, error: string): Promise<number | null> {
+  return sendMessage(
     chatId,
     formatTaskStatusMessage({
       status: 'failed',
@@ -201,8 +213,11 @@ export async function sendTaskFailed(chatId: string, error: string): Promise<voi
   )
 }
 
-export async function sendFeedbackRequest(chatId: string, question: string): Promise<void> {
-  await sendMessage(
+export async function sendFeedbackRequest(
+  chatId: string,
+  question: string
+): Promise<number | null> {
+  return sendMessage(
     chatId,
     formatTaskStatusMessage({
       status: 'awaiting_feedback',
@@ -211,8 +226,8 @@ export async function sendFeedbackRequest(chatId: string, question: string): Pro
   )
 }
 
-export async function sendTaskResolved(chatId: string): Promise<void> {
-  await sendMessage(chatId, formatTaskStatusMessage({ status: 'done' }))
+export async function sendTaskResolved(chatId: string): Promise<number | null> {
+  return sendMessage(chatId, formatTaskStatusMessage({ status: 'done' }))
 }
 
 export async function setWebhook(appUrl: string): Promise<string> {

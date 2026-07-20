@@ -75,6 +75,7 @@ export interface Task {
   screenshot_url: string | null
   agent_logs: AgentLogEntry[] | null
   feedback_history: FeedbackEntry[] | null
+  telegram_message_ids: number[] | null
   created_at: string
   started_at: string | null
   completed_at: string | null

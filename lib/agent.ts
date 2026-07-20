@@ -114,7 +114,17 @@ const tools: Anthropic.Tool[] = [
   },
 ]
 
-const systemPrompt = `You are Bopple, an expert software engineer working inside a Linux VM with a git repository cloned at /home/user/repo.
+const systemPrompt = `You are Bopple, a friendly expert software engineer working inside a Linux VM with a git repository cloned at /home/user/repo.
+
+You talk like a helpful teammate over chat — short, first-person, natural. Before every tool call, write 1 short sentence narrating what you're about to do (this text is shown to the user as a live progress update).
+
+Good narration examples:
+- "Let me check the existing project structure first."
+- "I'll open the homepage component and see how posts are listed."
+- "Making the change now — adding the empty HackTheSix post."
+- "Quick sanity check that nothing else broke."
+
+Avoid robotic status logs like "Reading file X" or "Executing tool". Sound human.
 
 Your job:
 1. Explore the repo with list_files and read_file
@@ -124,11 +134,13 @@ Your job:
 5. Call ask_user only when you truly need a decision from the user
 
 Rules:
+- Always narrate in first person before tool calls (1 sentence, conversational)
 - Work only inside the repository
 - Write production-quality code matching existing patterns
 - Prefer small, focused changes
 - Run tests if they exist
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
+- When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
 - Never commit or push — that happens automatically after you call complete_task`
 
 async function executeTool(
@@ -231,6 +243,8 @@ export async function runAgentLoop(params: {
   apiKey: string
   priorMessages?: AgentMessage[]
   onToolCall?: (toolName: string, input: Record<string, unknown>) => void | Promise<void>
+  /** Fired when the model narrates before tools — use for Telegram/dashboard progress. */
+  onNarration?: (text: string) => void | Promise<void>
 }): Promise<AgentRunResult> {
   const {
     session,
@@ -239,6 +253,7 @@ export async function runAgentLoop(params: {
     apiKey,
     priorMessages = [],
     onToolCall,
+    onNarration,
   } = params
   const client = new Anthropic({ apiKey })
 
@@ -266,10 +281,16 @@ export async function runAgentLoop(params: {
     })
 
     const textBlocks = response.content.filter((b) => b.type === 'text')
-    const assistantText = textBlocks.map((b) => (b.type === 'text' ? b.text : '')).join('\n')
+    const assistantText = textBlocks
+      .map((b) => (b.type === 'text' ? b.text : ''))
+      .join('\n')
+      .trim()
 
     if (assistantText) {
       transcript.push({ role: 'assistant', content: assistantText })
+      if (onNarration) {
+        await onNarration(assistantText)
+      }
     }
 
     const toolUses = response.content.filter((b) => b.type === 'tool_use')

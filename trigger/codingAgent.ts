@@ -10,6 +10,7 @@ import {
   sendFeedbackRequest,
   sendPhoto,
   sendMessage,
+  sendTypingAction,
   upsertProgressMessage,
 } from '../lib/telegram'
 import type { AgentMessage } from '../lib/agent'
@@ -236,13 +237,39 @@ export const codingAgentJob = task({
     let progressMessageId: number | null = null
     let hasLoggedWriting = false
 
+    async function rememberTelegramMessage(id: number | null | undefined) {
+      if (id == null) return
+      try {
+        const { data } = await supabase
+          .from('tasks')
+          .select('telegram_message_ids')
+          .eq('id', taskId)
+          .maybeSingle()
+        const existing = (data?.telegram_message_ids as number[] | null) ?? []
+        if (existing.includes(id)) return
+        await supabase
+          .from('tasks')
+          .update({ telegram_message_ids: [...existing, id] })
+          .eq('id', taskId)
+      } catch {
+        // Best-effort — threading still has awaiting_feedback fallback.
+      }
+    }
+
     async function updateTelegramProgress(text: string) {
       if (!chatId) return
       try {
+        await sendTypingAction(chatId)
         progressMessageId = await upsertProgressMessage(chatId, text, progressMessageId)
+        await rememberTelegramMessage(progressMessageId)
       } catch {
         // Don't fail the job if Telegram progress fails
       }
+    }
+
+    async function showTyping() {
+      if (!chatId) return
+      await sendTypingAction(chatId)
     }
 
     await supabase
@@ -258,7 +285,9 @@ export const codingAgentJob = task({
     // Mirror dashboard status=running in Telegram (same source of truth).
     if (chatId) {
       try {
+        await sendTypingAction(chatId)
         progressMessageId = await sendTaskRunning(chatId, progressMessageId)
+        await rememberTelegramMessage(progressMessageId)
       } catch {
         // Don't fail the job if Telegram notify fails
       }
@@ -266,11 +295,16 @@ export const codingAgentJob = task({
 
     const promptPreview = String(taskRow.prompt).slice(0, 120)
     await appendAgentLog(supabase, taskId, 'thinking', `Working on: ${promptPreview}`)
-    await updateTelegramProgress(`🔄 *Running*\n\nWorking on: ${promptPreview}`)
+    await updateTelegramProgress(
+      feedback
+        ? `Got your feedback — continuing on the same branch...`
+        : `Working through your codebase now...`
+    )
 
     let session: import('../lib/sandbox').SandboxSession | null = null
 
     try {
+      await showTyping()
       const defaultBranch = await getDefaultBranch(githubToken, taskRow.repo_full_name)
       const branchName =
         taskRow.branch_name ?? `bopple/${taskId.slice(0, 8)}-${Date.now()}`
@@ -281,6 +315,7 @@ export const codingAgentJob = task({
       session = sandboxSession
       await appendAgentLog(supabase, taskId, 'thinking', 'Spinning up VM...')
 
+      await showTyping()
       const prepared = await prepareRepo(
         session,
         taskRow.repo_full_name,
@@ -296,12 +331,14 @@ export const codingAgentJob = task({
       if (prepared.cloned) {
         await appendAgentLog(supabase, taskId, 'reading', 'Cloning repo...')
         await updateTelegramProgress(
-          '🔄 *Running*\n\nCloning your repo and starting work...'
+          feedback
+            ? 'Pulling up your project so I can keep going...'
+            : 'Pulling up your project...'
         )
         await appendAgentLog(supabase, taskId, 'thinking', 'Creating work branch...')
       } else {
         await appendAgentLog(supabase, taskId, 'reading', 'Resuming existing VM checkout...')
-        await updateTelegramProgress('🔄 *Running*\n\nResuming your codebase...')
+        await updateTelegramProgress('Picking up where we left off...')
       }
 
       await supabase
@@ -313,21 +350,31 @@ export const codingAgentJob = task({
         .eq('id', taskId)
 
       const priorMessages = (taskRow.conversation ?? []) as AgentMessage[]
-      const agentPrompt = feedback ?? taskRow.prompt
+      // Feedback continues the SAME task/branch — include prior conversation + branch.
+      const agentPrompt = feedback
+        ? `Continue the existing work on branch ${branchName}. Do not start over.\n\nUser feedback:\n${feedback}`
+        : taskRow.prompt
 
+      await showTyping()
       const agentResult = await runAgentLoop({
         session,
         prompt: agentPrompt,
         model: user.preferred_model,
         apiKey,
         priorMessages: feedback ? priorMessages : [],
+        onNarration: async (text) => {
+          const line = text.split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? text
+          const short = line.slice(0, 280)
+          await appendAgentLog(supabase, taskId, 'thinking', short)
+          await updateTelegramProgress(short)
+        },
         onToolCall: async (toolName, input) => {
+          await showTyping()
           const log = toolLogFromCall(toolName, input)
           await appendAgentLog(supabase, taskId, log.type, log.message)
 
           if (toolName === 'write_file' && !hasLoggedWriting) {
             hasLoggedWriting = true
-            await updateTelegramProgress('✏️ Writing code...')
           }
 
           // Keep the code panel in sync as files change.
@@ -394,7 +441,8 @@ export const codingAgentJob = task({
         // Mirror dashboard status=awaiting_feedback with the real clarifying question.
         if (chatId) {
           try {
-            await sendFeedbackRequest(chatId, feedbackQuestion)
+            const feedbackMsgId = await sendFeedbackRequest(chatId, feedbackQuestion)
+            await rememberTelegramMessage(feedbackMsgId)
           } catch {
             // Don't fail the job if Telegram notify fails
           }
@@ -529,7 +577,7 @@ export const codingAgentJob = task({
       // Mirror dashboard completion fields (PR, files, demo) in Telegram.
       if (chatId && prUrl) {
         try {
-          await sendTaskDone(
+          const doneMsgId = await sendTaskDone(
             chatId,
             prUrl,
             agentResult.prTitle,
@@ -537,6 +585,7 @@ export const codingAgentJob = task({
             demo.demoUrl ?? undefined,
             progressMessageId
           )
+          await rememberTelegramMessage(doneMsgId)
         } catch {
           // Don't fail the job if Telegram notify fails
         }
