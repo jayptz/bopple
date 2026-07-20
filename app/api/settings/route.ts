@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { encrypt } from '@/lib/crypto'
 import { randomBytes } from 'crypto'
+import { MODEL_OPTIONS } from '@/types'
 import type { User } from '@/types'
 
 export async function GET() {
@@ -91,6 +92,9 @@ export async function PATCH(request: Request) {
   }
 
   if (body.preferred_model) {
+    if (!MODEL_OPTIONS.some((opt) => opt.value === body.preferred_model)) {
+      return NextResponse.json({ error: 'Unknown model' }, { status: 400 })
+    }
     updates.preferred_model = body.preferred_model
   }
 

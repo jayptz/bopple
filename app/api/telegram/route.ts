@@ -168,15 +168,10 @@ async function appendTelegramMessageIds(
   const nextIds = ids.filter((id): id is number => typeof id === 'number')
   if (nextIds.length === 0) return
 
-  const { data } = await supabase
-    .from('tasks')
-    .select('telegram_message_ids')
-    .eq('id', taskId)
-    .maybeSingle()
-
-  const existing = (data?.telegram_message_ids as number[] | null) ?? []
-  const merged = Array.from(new Set([...existing, ...nextIds]))
-  await supabase.from('tasks').update({ telegram_message_ids: merged }).eq('id', taskId)
+  await supabase.rpc('append_telegram_message_ids', {
+    p_task_id: taskId,
+    p_ids: nextIds,
+  })
 }
 
 async function findTaskForReply(
@@ -481,10 +476,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    await supabase
-      .from('users')
-      .update({ tasks_used_this_month: user.tasks_used_this_month + 1 })
-      .eq('id', user.id)
+    await supabase.rpc('increment_tasks_used', { p_user_id: user.id })
 
     const queuedId = await sendTaskQueued(chatId, taskText)
     await appendTelegramMessageIds(supabase, task.id, [queuedId])

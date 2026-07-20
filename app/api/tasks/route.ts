@@ -111,10 +111,7 @@ export async function POST(request: Request) {
       )
     }
 
-    await serviceClient
-      .from('users')
-      .update({ tasks_used_this_month: typedProfile.tasks_used_this_month + 1 })
-      .eq('id', user.id)
+    await serviceClient.rpc('increment_tasks_used', { p_user_id: user.id })
 
     if (typedProfile.telegram_chat_id) {
       try {

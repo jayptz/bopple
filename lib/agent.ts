@@ -200,7 +200,11 @@ async function executeTool(
     }
     case 'take_screenshot': {
       const raw = String(input.route ?? '/').trim() || '/'
-      const route = raw.startsWith('/') ? raw : `/${raw}`
+      const normalized = raw.startsWith('/') ? raw : `/${raw}`
+      if (normalized.includes('..') || !/^\/[\w\-./?=&%#[\]]*$/.test(normalized)) {
+        return { output: `Error: invalid route "${raw}" — use an app path like /dashboard` }
+      }
+      const route = normalized
       return {
         output: `Screenshot of ${route} queued — it is captured and sent automatically after the build completes.`,
         screenshotRoute: route,
