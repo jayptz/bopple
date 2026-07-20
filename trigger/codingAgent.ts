@@ -362,6 +362,7 @@ export const codingAgentJob = task({
         model: user.preferred_model,
         apiKey,
         priorMessages: feedback ? priorMessages : [],
+        referenceImageBase64: taskRow.reference_image_base64 as string | null,
         onNarration: async (text) => {
           const line = text.split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? text
           const short = line.slice(0, 280)

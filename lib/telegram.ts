@@ -86,6 +86,64 @@ export async function sendPhoto(
   })
 }
 
+export type TelegramImageMediaType =
+  | 'image/jpeg'
+  | 'image/png'
+  | 'image/gif'
+  | 'image/webp'
+
+function mediaTypeFromPath(filePath: string): TelegramImageMediaType {
+  const lower = filePath.toLowerCase()
+  if (lower.endsWith('.png')) return 'image/png'
+  if (lower.endsWith('.gif')) return 'image/gif'
+  if (lower.endsWith('.webp')) return 'image/webp'
+  return 'image/jpeg'
+}
+
+/** Download a Telegram file by file_id and return base64 bytes. */
+export async function downloadTelegramFile(fileId: string): Promise<{
+  base64: string
+  mediaType: TelegramImageMediaType
+  byteLength: number
+}> {
+  const token = getBotToken()
+
+  const metaRes = await fetch(`${TELEGRAM_API_BASE}/bot${token}/getFile`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_id: fileId }),
+  })
+
+  if (!metaRes.ok) {
+    const errorText = await metaRes.text()
+    throw new Error(`Telegram getFile failed: ${errorText}`)
+  }
+
+  const meta = (await metaRes.json()) as {
+    ok: boolean
+    description?: string
+    result?: { file_path?: string }
+  }
+
+  if (!meta.ok || !meta.result?.file_path) {
+    throw new Error(meta.description ?? 'Telegram getFile returned no file_path')
+  }
+
+  const filePath = meta.result.file_path
+  const fileRes = await fetch(`${TELEGRAM_API_BASE}/file/bot${token}/${filePath}`)
+  if (!fileRes.ok) {
+    const errorText = await fileRes.text()
+    throw new Error(`Telegram file download failed: ${errorText}`)
+  }
+
+  const buffer = Buffer.from(await fileRes.arrayBuffer())
+  return {
+    base64: buffer.toString('base64'),
+    mediaType: mediaTypeFromPath(filePath),
+    byteLength: buffer.byteLength,
+  }
+}
+
 export async function editMessageText(
   chatId: string,
   messageId: number,

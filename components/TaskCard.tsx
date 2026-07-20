@@ -169,6 +169,17 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
         <Badge status={task.status} />
       </div>
 
+      {task.reference_image_base64 && (
+        <div className="pt-1">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={`data:image/jpeg;base64,${task.reference_image_base64}`}
+            alt="Reference image for this task"
+            className="h-24 w-auto max-w-full rounded-lg border border-zinc-800 object-cover"
+          />
+        </div>
+      )}
+
       <div className="flex items-center justify-between text-xs text-zinc-500">
         <span>{timeAgo(task.created_at)}</span>
         {task.source === 'telegram' && <span>via Telegram</span>}

@@ -16,7 +16,7 @@ export async function GET() {
   const serviceClient = createServiceClient()
   const { data: profile } = await serviceClient
     .from('users')
-    .select('github_access_token')
+    .select('github_access_token, github_username')
     .eq('id', user.id)
     .single()
 
@@ -27,7 +27,10 @@ export async function GET() {
   try {
     const token = decrypt(profile.github_access_token)
     const repos = await getUserRepos(token)
-    return NextResponse.json({ repos })
+    return NextResponse.json({
+      repos,
+      github_username: profile.github_username as string,
+    })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to fetch repos'
     return NextResponse.json({ error: message }, { status: 500 })

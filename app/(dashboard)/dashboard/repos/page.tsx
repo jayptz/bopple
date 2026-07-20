@@ -1,12 +1,19 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import type { GitHubRepo } from '@/components/RepoSelector'
 
+function sortByFullName(repos: GitHubRepo[]) {
+  return [...repos].sort((a, b) =>
+    a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })
+  )
+}
+
 export default function ReposPage() {
   const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([])
+  const [githubUsername, setGithubUsername] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -17,8 +24,12 @@ export default function ReposPage() {
       try {
         const res = await fetch('/api/github/repos')
         if (!res.ok) throw new Error('Failed to load repos')
-        const data = (await res.json()) as { repos: GitHubRepo[] }
+        const data = (await res.json()) as {
+          repos: GitHubRepo[]
+          github_username: string
+        }
         setGithubRepos(data.repos)
+        setGithubUsername(data.github_username)
       } catch {
         setMessage('Could not load GitHub repos. Try signing in again.')
       } finally {
@@ -27,6 +38,26 @@ export default function ReposPage() {
     }
     load()
   }, [])
+
+  const { ownedRepos, collaboratingRepos } = useMemo(() => {
+    const username = githubUsername?.toLowerCase() ?? ''
+    const owned: GitHubRepo[] = []
+    const collaborating: GitHubRepo[] = []
+
+    for (const repo of githubRepos) {
+      const ownerLogin = repo.owner?.login?.toLowerCase() ?? ''
+      if (username && ownerLogin === username) {
+        owned.push(repo)
+      } else {
+        collaborating.push(repo)
+      }
+    }
+
+    return {
+      ownedRepos: sortByFullName(owned),
+      collaboratingRepos: sortByFullName(collaborating),
+    }
+  }, [githubRepos, githubUsername])
 
   function toggleRepo(id: number) {
     setSelected((prev) => {
@@ -72,6 +103,36 @@ export default function ReposPage() {
     }
   }
 
+  function renderRepoList(repos: GitHubRepo[]) {
+    return (
+      <div className="space-y-2">
+        {repos.map((repo) => (
+          <label
+            key={repo.id}
+            className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
+              selected.has(repo.id)
+                ? 'border-emerald-700 bg-emerald-950/30'
+                : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={selected.has(repo.id)}
+              onChange={() => toggleRepo(repo.id)}
+              className="rounded border-zinc-700 bg-zinc-800 text-emerald-600 focus:ring-emerald-600"
+            />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-mono text-zinc-200">{repo.full_name}</p>
+              <p className="text-xs text-zinc-500">
+                {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
+              </p>
+            </div>
+          </label>
+        ))}
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto max-w-2xl space-y-6 overflow-y-auto px-4 py-6 h-full">
       <div className="flex items-center justify-between">
@@ -93,30 +154,24 @@ export default function ReposPage() {
           ))}
         </div>
       ) : (
-        <div className="space-y-2">
-          {githubRepos.map((repo) => (
-            <label
-              key={repo.id}
-              className={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${
-                selected.has(repo.id)
-                  ? 'border-emerald-700 bg-emerald-950/30'
-                  : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
-              }`}
-            >
-              <input
-                type="checkbox"
-                checked={selected.has(repo.id)}
-                onChange={() => toggleRepo(repo.id)}
-                className="rounded border-zinc-700 bg-zinc-800 text-emerald-600 focus:ring-emerald-600"
-              />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-mono text-zinc-200">{repo.full_name}</p>
-                <p className="text-xs text-zinc-500">
-                  {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
-                </p>
-              </div>
-            </label>
-          ))}
+        <div className="space-y-8">
+          {ownedRepos.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-sm font-medium text-zinc-300">Your repos</h2>
+              {renderRepoList(ownedRepos)}
+            </section>
+          )}
+
+          {collaboratingRepos.length > 0 && (
+            <section className="space-y-3">
+              <h2 className="text-sm font-medium text-zinc-300">Collaborating on</h2>
+              {renderRepoList(collaboratingRepos)}
+            </section>
+          )}
+
+          {ownedRepos.length === 0 && collaboratingRepos.length === 0 && (
+            <p className="text-sm text-zinc-500">No GitHub repos found for this account.</p>
+          )}
         </div>
       )}
 

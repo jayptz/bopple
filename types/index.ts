@@ -73,6 +73,8 @@ export interface Task {
   demo_logs: string | null
   diff_text: string | null
   screenshot_url: string | null
+  /** Base64-encoded reference image from Telegram (no data-URL prefix). */
+  reference_image_base64: string | null
   agent_logs: AgentLogEntry[] | null
   feedback_history: FeedbackEntry[] | null
   telegram_message_ids: number[] | null

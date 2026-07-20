@@ -422,6 +422,14 @@ export function DashboardWorkspace() {
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
                 <div className="ml-auto max-w-[85%] rounded-2xl bg-zinc-800 px-4 py-3 text-sm text-zinc-100">
                   {selectedTask.prompt}
+                  {selectedTask.reference_image_base64 && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`data:image/jpeg;base64,${selectedTask.reference_image_base64}`}
+                      alt="Reference image"
+                      className="mt-2 h-28 w-auto max-w-full rounded-lg border border-zinc-700 object-cover"
+                    />
+                  )}
                   <p className="mt-1 text-[10px] text-zinc-500">
                     {timeAgo(selectedTask.created_at)}
                     {selectedTask.source === 'telegram' ? ' · Telegram' : ''}

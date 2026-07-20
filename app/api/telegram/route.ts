@@ -2,13 +2,25 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase-server'
 import { tasks } from '@trigger.dev/sdk/v3'
 import { codingAgentJob } from '@/trigger/codingAgent'
-import { sendMessage, sendTaskQueued, sendTypingAction } from '@/lib/telegram'
+import {
+  downloadTelegramFile,
+  sendMessage,
+  sendTaskQueued,
+  sendTypingAction,
+} from '@/lib/telegram'
 import type { FeedbackEntry } from '@/types'
 
 interface TelegramUpdate {
   message?: {
     message_id?: number
     text?: string
+    caption?: string
+    photo?: {
+      file_id: string
+      file_unique_id: string
+      width: number
+      height: number
+    }[]
     chat: { id: number }
     reply_to_message?: {
       message_id: number
@@ -17,6 +29,10 @@ interface TelegramUpdate {
     }
   }
 }
+
+/** Reject Telegram photos whose base64 payload exceeds ~5MB. */
+const MAX_REFERENCE_IMAGE_BASE64_CHARS = 5 * 1024 * 1024
+const DEFAULT_PHOTO_PROMPT = 'Make the UI match this reference image'
 
 type ContinuableTask = {
   id: string
@@ -268,12 +284,15 @@ export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as TelegramUpdate
     const message = body.message
-    if (!message?.text) {
+    const hasPhoto = Boolean(message?.photo && message.photo.length > 0)
+    const rawText = (message?.text ?? message?.caption ?? '').trim()
+
+    if (!message || (!rawText && !hasPhoto)) {
       return NextResponse.json({ ok: true })
     }
 
     chatId = message.chat.id.toString()
-    const text = message.text.trim()
+    const text = rawText
     const userMessageId = message.message_id
     const replyToMessageId = message.reply_to_message?.message_id
     const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://bopple.dev'
@@ -281,6 +300,7 @@ export async function POST(req: NextRequest) {
 
     await sendTypingAction(chatId).catch(() => undefined)
 
+    // Commands are text-only (ignore accidental photos attached to /start etc.)
     if (text === '/start') {
       await sendMessage(
         chatId,
@@ -292,7 +312,7 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
       )
       return NextResponse.json({ ok: true })
     }
@@ -350,18 +370,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
+    let referenceImageBase64: string | null = null
+
+    if (hasPhoto && message.photo) {
+      // Telegram sends multiple sizes — last element is the largest.
+      const largest = message.photo[message.photo.length - 1]
+      try {
+        const downloaded = await downloadTelegramFile(largest.file_id)
+        if (downloaded.base64.length > MAX_REFERENCE_IMAGE_BASE64_CHARS) {
+          await sendMessage(chatId, 'Image too large, try a smaller screenshot')
+          return NextResponse.json({ ok: true })
+        }
+        referenceImageBase64 = downloaded.base64
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : 'Failed to download image'
+        await sendMessage(chatId, `❌ Couldn't download that image: ${detail}`)
+        return NextResponse.json({ ok: true })
+      }
+    }
+
     // Force a brand-new task: "/new make the navbar blue"
     const forceNew = text.toLowerCase().startsWith('/new ')
-    const taskText = forceNew ? text.slice(5).trim() : text
+    const taskText = forceNew
+      ? text.slice(5).trim()
+      : text || (hasPhoto ? DEFAULT_PHOTO_PROMPT : '')
 
     if (!forceNew) {
       const openTask = await findTaskForReply(supabase, user.id, replyToMessageId)
       if (openTask) {
+        if (referenceImageBase64) {
+          await supabase
+            .from('tasks')
+            .update({ reference_image_base64: referenceImageBase64 })
+            .eq('id', openTask.id)
+        }
         await continueTaskWithFeedback(
           supabase,
           chatId,
           openTask,
-          taskText,
+          taskText || DEFAULT_PHOTO_PROMPT,
           userMessageId
         )
         return NextResponse.json({ ok: true })
@@ -422,6 +469,9 @@ export async function POST(req: NextRequest) {
         status: 'queued',
         telegram_chat_id: chatId,
         telegram_message_ids: userMessageId != null ? [userMessageId] : [],
+        ...(referenceImageBase64
+          ? { reference_image_base64: referenceImageBase64 }
+          : {}),
       })
       .select('id')
       .single()

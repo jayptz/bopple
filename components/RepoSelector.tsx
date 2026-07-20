@@ -52,4 +52,7 @@ export interface GitHubRepo {
   full_name: string
   default_branch: string
   private: boolean
+  owner: {
+    login: string
+  }
 }

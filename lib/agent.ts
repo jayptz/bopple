@@ -140,6 +140,7 @@ Rules:
 - Prefer small, focused changes
 - Run tests if they exist
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
+- When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
 - Never commit or push — that happens automatically after you call complete_task`
 
@@ -242,6 +243,9 @@ export async function runAgentLoop(params: {
   model: string
   apiKey: string
   priorMessages?: AgentMessage[]
+  /** Raw base64 (no data-URL prefix) of a UI reference screenshot. */
+  referenceImageBase64?: string | null
+  referenceImageMediaType?: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
   onToolCall?: (toolName: string, input: Record<string, unknown>) => void | Promise<void>
   /** Fired when the model narrates before tools — use for Telegram/dashboard progress. */
   onNarration?: (text: string) => void | Promise<void>
@@ -252,22 +256,47 @@ export async function runAgentLoop(params: {
     model,
     apiKey,
     priorMessages = [],
+    referenceImageBase64,
+    referenceImageMediaType = 'image/jpeg',
     onToolCall,
     onNarration,
   } = params
   const client = new Anthropic({ apiKey })
 
-  const transcript: AgentMessage[] = [...priorMessages]
-  if (priorMessages.length === 0) {
-    transcript.push({ role: 'user', content: prompt })
-  } else {
-    transcript.push({ role: 'user', content: prompt })
-  }
+  const hasReferenceImage = Boolean(referenceImageBase64)
+  const userText = hasReferenceImage
+    ? `Here's a reference image showing the desired UI/design. Task: ${prompt}`
+    : prompt
 
-  const anthropicMessages: Anthropic.MessageParam[] = transcript.map((m) => ({
+  const transcript: AgentMessage[] = [...priorMessages]
+  transcript.push({ role: 'user', content: userText })
+
+  const anthropicMessages: Anthropic.MessageParam[] = priorMessages.map((m) => ({
     role: m.role,
     content: m.content,
   }))
+
+  if (hasReferenceImage && referenceImageBase64) {
+    anthropicMessages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: referenceImageMediaType,
+            data: referenceImageBase64,
+          },
+        },
+        {
+          type: 'text',
+          text: userText,
+        },
+      ],
+    })
+  } else {
+    anthropicMessages.push({ role: 'user', content: userText })
+  }
 
   let screenshotRoute: string | null = null
 
