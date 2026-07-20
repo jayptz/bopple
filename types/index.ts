@@ -62,6 +62,8 @@ export interface Task {
   files_changed: number | null
   lines_added: number | null
   lines_removed: number | null
+  /** Subdir (or ".") where the agent edited — reused across feedback follow-ups. */
+  working_scope: string | null
   error_message: string | null
   source: TaskSource
   telegram_chat_id: string | null

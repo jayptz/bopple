@@ -427,6 +427,11 @@ export const codingAgentJob = task({
           }
         }
 
+        const wipScope =
+          (typeof taskRow.working_scope === 'string' && taskRow.working_scope.trim()
+            ? taskRow.working_scope.trim()
+            : null) ?? deriveWorkingScope(writtenPaths)
+
         await supabase
           .from('tasks')
           .update({
@@ -435,6 +440,7 @@ export const codingAgentJob = task({
             sandbox_id: session.sandbox.sandboxId,
             branch_name: branchName,
             ...(wipDiff ? { diff_text: wipDiff } : {}),
+            ...(wipScope && !taskRow.working_scope ? { working_scope: wipScope } : {}),
           })
           .eq('id', taskId)
 
@@ -468,13 +474,28 @@ export const codingAgentJob = task({
         taskRow.repo_full_name
       )
 
-      const workingScope = deriveWorkingScope(writtenPaths)
+      const derivedScope = deriveWorkingScope(writtenPaths)
+      const priorScope =
+        typeof taskRow.working_scope === 'string' && taskRow.working_scope.trim()
+          ? taskRow.working_scope.trim()
+          : null
+      // Prefer persisted scope (set once on the original run); only derive from new writes if unset.
+      const workingScope = priorScope ?? derivedScope
+
+      if (!priorScope && derivedScope) {
+        await supabase
+          .from('tasks')
+          .update({ working_scope: derivedScope })
+          .eq('id', taskId)
+        taskRow.working_scope = derivedScope
+      }
+
       const demo = workingScope
         ? await tryGenerateDemo(session, workingScope)
         : {
             demoUrl: null as string | null,
             demoLogs:
-              'No files were written during this task — cannot determine working scope; skipped screenshot.',
+              'No working_scope on this task and no files were written — cannot determine working scope; skipped screenshot.',
           }
 
       if (workingScope) {
@@ -482,14 +503,16 @@ export const codingAgentJob = task({
           supabase,
           taskId,
           'running',
-          `Demo scope locked to ${workingScope}`
+          priorScope && !derivedScope
+            ? `Reusing persisted demo scope ${workingScope}`
+            : `Demo scope locked to ${workingScope}`
         )
       } else {
         await appendAgentLog(
           supabase,
           taskId,
           'thinking',
-          'No write_file paths — skipped scoped demo/screenshot'
+          'No working_scope recorded and no write_file paths — skipped scoped demo/screenshot'
         )
       }
 
@@ -595,6 +618,7 @@ export const codingAgentJob = task({
           files_changed: pushResult.filesChanged,
           lines_added: pushResult.linesAdded,
           lines_removed: pushResult.linesRemoved,
+          ...(workingScope ? { working_scope: workingScope } : {}),
           diff_text: pushResult.diffText || null,
           demo_url: demo.demoUrl,
           demo_logs: demo.demoLogs,
