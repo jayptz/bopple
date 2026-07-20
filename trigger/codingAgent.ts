@@ -19,6 +19,7 @@ import {
   closeSandbox,
   commitAndPush,
   createSandboxSession,
+  deriveWorkingScope,
   getWorkingDiff,
   prepareRepo,
   pushBranch,
@@ -236,21 +237,15 @@ export const codingAgentJob = task({
     const chatId = user.telegram_chat_id
     let progressMessageId: number | null = null
     let hasLoggedWriting = false
+    const writtenPaths: string[] = []
 
     async function rememberTelegramMessage(id: number | null | undefined) {
       if (id == null) return
       try {
-        const { data } = await supabase
-          .from('tasks')
-          .select('telegram_message_ids')
-          .eq('id', taskId)
-          .maybeSingle()
-        const existing = (data?.telegram_message_ids as number[] | null) ?? []
-        if (existing.includes(id)) return
-        await supabase
-          .from('tasks')
-          .update({ telegram_message_ids: [...existing, id] })
-          .eq('id', taskId)
+        await supabase.rpc('append_telegram_message_ids', {
+          p_task_id: taskId,
+          p_ids: [id],
+        })
       } catch {
         // Best-effort — threading still has awaiting_feedback fallback.
       }
@@ -382,6 +377,8 @@ export const codingAgentJob = task({
 
           // Keep the code panel in sync as files change.
           if (toolName === 'write_file') {
+            const writtenPath = String(input.path ?? '').trim()
+            if (writtenPath) writtenPaths.push(writtenPath)
             try {
               if (!session) return
               const diffText = await getWorkingDiff(session)
@@ -471,7 +468,30 @@ export const codingAgentJob = task({
         taskRow.repo_full_name
       )
 
-      const demo = await tryGenerateDemo(session)
+      const workingScope = deriveWorkingScope(writtenPaths)
+      const demo = workingScope
+        ? await tryGenerateDemo(session, workingScope)
+        : {
+            demoUrl: null as string | null,
+            demoLogs:
+              'No files were written during this task — cannot determine working scope; skipped screenshot.',
+          }
+
+      if (workingScope) {
+        await appendAgentLog(
+          supabase,
+          taskId,
+          'running',
+          `Demo scope locked to ${workingScope}`
+        )
+      } else {
+        await appendAgentLog(
+          supabase,
+          taskId,
+          'thinking',
+          'No write_file paths — skipped scoped demo/screenshot'
+        )
+      }
 
       // Force screenshot when the user asked for one, even if the model forgot the tool.
       const promptText = `${String(taskRow.prompt)}\n${feedback ?? ''}`
@@ -491,11 +511,12 @@ export const codingAgentJob = task({
 
       if (screenshotRoute) {
         if (!demo.demoUrl) {
-          const timeoutSkip = demo.demoLogs.includes(
-            'Dev server did not start in time — skipped screenshot'
-          )
-          screenshotError = timeoutSkip
-            ? 'Dev server did not start in time — skipped screenshot'
+          const scopedFailure =
+            demo.demoLogs.includes('skipped screenshot') ||
+            demo.demoLogs.includes('cannot determine working scope') ||
+            demo.demoLogs.includes('No package.json')
+          screenshotError = scopedFailure
+            ? demo.demoLogs.split('\n\n').at(-1) ?? demo.demoLogs.slice(0, 400)
             : `Could not start a preview server.\n${demo.demoLogs.slice(0, 400)}`
           await appendAgentLog(supabase, taskId, 'thinking', screenshotError.slice(0, 200))
         } else {
