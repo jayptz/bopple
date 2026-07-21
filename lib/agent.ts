@@ -142,6 +142,7 @@ Rules:
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
+- Never delete or modify package-lock.json or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
 - Never commit or push — that happens automatically after you call complete_task`
 
 const followUpSystemAddon = `
