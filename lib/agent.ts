@@ -87,7 +87,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: 'take_screenshot',
     description:
-      'Request a screenshot of the running app to send back to the user. ONLY call this when the user explicitly asks to see a screenshot / preview / visual of the change. The screenshot is captured automatically after the build — you do not need to start any server yourself. Call it after you have made the visual change.',
+      'Request a screenshot of the running app to send back to the user. ONLY call this when the user explicitly asks to see a screenshot / preview / visual of the change. Do NOT install deps or start a server yourself — Bopple captures the screenshot automatically after complete_task. Call this after you have made the visual change.',
     input_schema: {
       type: 'object',
       properties: {
@@ -140,6 +140,7 @@ Rules:
 - Prefer small, focused changes
 - Run tests if they exist
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
+- Do NOT run npm/pnpm install, next build, or start a dev server just to take a screenshot — Bopple installs deps and captures the screenshot automatically after you call complete_task. Heavy installs in the agent loop often OOM the VM and break the later screenshot step.
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
 - Never delete or modify package-lock.json or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
