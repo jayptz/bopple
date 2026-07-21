@@ -140,10 +140,11 @@ Rules:
 - Prefer small, focused changes
 - Run tests if they exist
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
-- Do NOT run npm/pnpm install, next build, or start a dev server just to take a screenshot — Bopple installs deps and captures the screenshot automatically after you call complete_task. Heavy installs in the agent loop often OOM the VM and break the later screenshot step.
+- Do NOT run npm/pnpm/yarn install, next build, or start a dev server just to take a screenshot — Bopple installs deps with pnpm and captures the screenshot automatically after you call complete_task. Heavy installs in the agent loop often OOM the VM and break the later screenshot step.
+- If the working scope has pnpm-lock.yaml or package.json#packageManager starts with "pnpm@", use pnpm (never npm install / npm ci) when you must install for tests. Prefer yarn when yarn.lock is present. Only use npm when that is clearly the project's package manager.
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
-- Never delete or modify package-lock.json or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
+- Never delete or modify lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock) or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
 - Never commit or push — that happens automatically after you call complete_task`
 
 const followUpSystemAddon = `
