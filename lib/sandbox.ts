@@ -550,9 +550,12 @@ const DEMO_NODE_OPTIONS = '--max-old-space-size=512'
 
 /** Standalone pnpm binary path — avoids PATH issues after bootstrap. */
 const PNPM_STANDALONE_PATH = '/tmp/bopple-pnpm'
-/** Pin a known-good pnpm static binary for E2B linux x64 sandboxes. */
-const PNPM_STANDALONE_URL =
-  'https://github.com/pnpm/pnpm/releases/download/v9.15.9/pnpm-linuxstatic-x64'
+/**
+ * Pin pnpm 10.x for E2B sandboxes (Node 20).
+ * pnpm 11+ requires Node ≥22.13 and fails on the default E2B image (Node 20.x).
+ */
+const PNPM_VERSION = '10.34.5'
+const PNPM_STANDALONE_URL = `https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linuxstatic-x64`
 
 type PackageManager = 'pnpm' | 'npm' | 'yarn'
 
@@ -597,16 +600,39 @@ async function detectPackageManager(
   return detected
 }
 
-async function resolveExistingPnpmBin(
-  session: SandboxSession
+/** Return true if this pnpm binary can run on the sandbox Node version. */
+async function pnpmBinWorks(
+  session: SandboxSession,
+  bin: string,
+  logs: string[]
+): Promise<boolean> {
+  const probe = await runCommand(session, `${shellQuote(bin)} --version`, {
+    allowNonZero: true,
+    timeoutMs: 15_000,
+  })
+  const out = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`.trim()
+  logs.push(`pnpm probe (${bin}) exit ${probe.exitCode}: ${out.slice(0, 300) || '(no output)'}`)
+  if (probe.exitCode !== 0) return false
+  // pnpm 11 on Node 20 may still print a version with warnings, then fail on real commands.
+  if (/requires at least Node\.js/i.test(out) && /Node\.js v?2[2-9]/i.test(out)) {
+    return false
+  }
+  return Boolean((probe.stdout ?? '').trim())
+}
+
+async function resolveCompatiblePnpmBin(
+  session: SandboxSession,
+  logs: string[]
 ): Promise<string | null> {
+  const candidates: string[] = []
+
   const standalone = await runCommand(
     session,
     `test -x ${shellQuote(PNPM_STANDALONE_PATH)} && echo ${shellQuote(PNPM_STANDALONE_PATH)}`,
     { allowNonZero: true, timeoutMs: 10_000 }
   )
   if (standalone.exitCode === 0 && (standalone.stdout ?? '').trim()) {
-    return (standalone.stdout ?? '').trim()
+    candidates.push((standalone.stdout ?? '').trim())
   }
 
   const which = await runCommand(session, 'which pnpm', {
@@ -614,49 +640,42 @@ async function resolveExistingPnpmBin(
     timeoutMs: 10_000,
   })
   if (which.exitCode === 0 && (which.stdout ?? '').trim()) {
-    return (which.stdout ?? '').trim()
+    candidates.push((which.stdout ?? '').trim())
+  }
+
+  for (const bin of candidates) {
+    if (await pnpmBinWorks(session, bin, logs)) return bin
+    logs.push(`Ignoring incompatible pnpm at ${bin}`)
   }
   return null
 }
 
 /**
- * Ensure a pnpm binary is available for the demo install.
- * Prefer an existing binary, then corepack, then a standalone static download.
- * Never installs project deps with npm, and never bootstraps via `npm install -g`.
+ * Ensure a Node-20-compatible pnpm binary is available for the demo install.
+ * Prefer a verified existing binary, then a pinned standalone download (pnpm 10.x).
+ * Never installs project deps with npm, and never bootstraps via `npm install -g`
+ * (that pulls pnpm 11+, which requires Node ≥22.13 and breaks on E2B Node 20).
  */
 async function ensurePnpmAvailable(
   session: SandboxSession,
   logs: string[]
 ): Promise<{ ok: true; bin: string } | { ok: false; error: string }> {
-  const existing = await resolveExistingPnpmBin(session)
+  const nodeVer = await runCommand(session, 'node --version', {
+    allowNonZero: true,
+    timeoutMs: 10_000,
+  })
+  logs.push(`Sandbox Node: ${(nodeVer.stdout ?? nodeVer.stderr ?? '').trim() || 'unknown'}`)
+
+  const existing = await resolveCompatiblePnpmBin(session, logs)
   if (existing) {
-    logs.push(`pnpm already available: ${existing}`)
+    logs.push(`pnpm already available (compatible): ${existing}`)
     return { ok: true, bin: existing }
   }
 
-  // corepack ships with many Node installs and does not pull the full npm installer.
-  logs.push('pnpm not found — trying corepack enable + prepare')
-  try {
-    const corepack = await runCommand(
-      session,
-      'corepack enable && corepack prepare pnpm@9.15.9 --activate && which pnpm',
-      { timeoutMs: COMMAND_TIMEOUT_MS, allowNonZero: true }
-    )
-    const out = (corepack.stdout || corepack.stderr || '').trim().slice(-1500)
-    logs.push(`corepack prepare exit ${corepack.exitCode}\n${out || '(no output)'}`)
-    if (corepack.exitCode === 0) {
-      const bin = await resolveExistingPnpmBin(session)
-      if (bin) {
-        logs.push(`pnpm ready via corepack: ${bin}`)
-        return { ok: true, bin }
-      }
-    }
-  } catch (error) {
-    logs.push(error instanceof Error ? error.message : 'corepack prepare failed')
-  }
-
-  // Static binary — no npm, no node_modules, low memory.
-  logs.push(`pnpm not found — downloading standalone binary to ${PNPM_STANDALONE_PATH}`)
+  // Static binary first — no npm, no corepack surprises, pinned to Node-20-safe pnpm 10.
+  logs.push(
+    `pnpm not found/compatible — downloading standalone pnpm@${PNPM_VERSION} to ${PNPM_STANDALONE_PATH}`
+  )
   try {
     const download = await runCommand(
       session,
@@ -669,21 +688,42 @@ async function ensurePnpmAvailable(
     )
     const out = (download.stdout || download.stderr || '').trim().slice(-1500)
     logs.push(`standalone pnpm exit ${download.exitCode}\n${out || '(no output)'}`)
-    if (download.exitCode === 0) {
-      logs.push(`pnpm ready (standalone): ${PNPM_STANDALONE_PATH}`)
+    if (download.exitCode === 0 && (await pnpmBinWorks(session, PNPM_STANDALONE_PATH, logs))) {
+      logs.push(`pnpm ready (standalone ${PNPM_VERSION}): ${PNPM_STANDALONE_PATH}`)
       return { ok: true, bin: PNPM_STANDALONE_PATH }
     }
-    return {
-      ok: false,
-      error: describeInstallFailure('pnpm standalone download', download.exitCode, out),
+  } catch (error) {
+    logs.push(error instanceof Error ? error.message : 'failed to download pnpm')
+  }
+
+  // Fallback: corepack with an explicit Node-20-safe version (never "latest"/pnpm 11).
+  logs.push(`standalone failed — trying corepack prepare pnpm@${PNPM_VERSION}`)
+  try {
+    const corepack = await runCommand(
+      session,
+      `corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && which pnpm`,
+      { timeoutMs: COMMAND_TIMEOUT_MS, allowNonZero: true }
+    )
+    const out = (corepack.stdout || corepack.stderr || '').trim().slice(-1500)
+    logs.push(`corepack prepare exit ${corepack.exitCode}\n${out || '(no output)'}`)
+    if (corepack.exitCode === 0) {
+      const bin = await resolveCompatiblePnpmBin(session, logs)
+      if (bin) {
+        logs.push(`pnpm ready via corepack: ${bin}`)
+        return { ok: true, bin }
+      }
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : 'failed to download pnpm'
-    logs.push(detail)
-    return {
-      ok: false,
-      error: describeInstallFailure('pnpm standalone download', undefined, detail),
-    }
+    logs.push(error instanceof Error ? error.message : 'corepack prepare failed')
+  }
+
+  return {
+    ok: false,
+    error: describeInstallFailure(
+      `pnpm@${PNPM_VERSION} bootstrap`,
+      undefined,
+      'Could not install a Node-20-compatible pnpm (avoid pnpm 11+ on E2B Node 20)'
+    ),
   }
 }
 
