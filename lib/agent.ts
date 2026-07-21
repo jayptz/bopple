@@ -140,12 +140,13 @@ Rules:
 - Prefer small, focused changes
 - Run tests if they exist
 - If the user asks for a screenshot / preview / to "see what it looks like", you MUST call take_screenshot (usually route "/") BEFORE complete_task. Do not skip it.
-- Do NOT run npm/pnpm install, next build, or start a dev server just to take a screenshot — Bopple installs deps and captures the screenshot automatically after you call complete_task. Heavy installs in the agent loop often OOM the VM and break the later screenshot step.
+- Do NOT run npm/pnpm/yarn install, next build, or start a dev server just to take a screenshot — Bopple installs deps with pnpm and captures the screenshot automatically after you call complete_task. Heavy installs in the agent loop often OOM the VM and break the later screenshot step.
+- If the working scope has pnpm-lock.yaml or package.json#packageManager starts with "pnpm@", use pnpm (never npm install / npm ci) when you must install for tests. Prefer yarn when yarn.lock is present. Only use npm when that is clearly the project's package manager.
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
-- Never delete or modify package-lock.json or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
-- Never commit or push — that happens automatically after you call complete_task
-- CRITICAL — never fabricate the user's work: When asked to create a blog post, changelog entry, README description of a feature, or any content describing work the user has done, and you do not have verified information about that specific work from the repo, documentation, or explicit user instruction, you must NOT invent plausible-sounding details, technical specifics, metrics, dates, or outcomes. If the user says "draft" or "placeholder" or "keep it empty," write only structural/placeholder content — a title and a "content coming soon" style body — never fabricated paragraphs describing fictional work, technologies, or results, even if asked to make it "match the aesthetic" of other real posts. If asked for content beyond a placeholder and you lack real information, use the ask_user tool to ask what the post should actually say, rather than guessing. This applies especially to first-person narrative content ("we built...", "I shipped...") — default to structural placeholders unless you have explicit, verified source material for every claim.`
+=
+- Never delete or modify lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock) or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
+- Never commit or push — that happens automatically after you call complete_task`
 
 const followUpSystemAddon = `
 

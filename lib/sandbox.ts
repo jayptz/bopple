@@ -544,8 +544,9 @@ function skipScreenshot(logs: string[], label: string, attempts: number, lastErr
 
 function looksLikeOomKill(exitCode: number | undefined, output: string): boolean {
   if (exitCode === 137 || exitCode === 143) return true
-  // E2B often returns -1 / 255 with empty stdout/stderr when the process is OOM-killed.
-  if ((exitCode === -1 || exitCode === 255) && !output.trim()) return true
+  // E2B often returns -1 / 255 when the process is OOM-killed — sometimes with
+  // empty output, sometimes with truncated pnpm "Progress:" lines mid-download.
+  if (exitCode === -1 || exitCode === 255) return true
   return (
     /\bkilled\b/i.test(output) ||
     /out of memory|cannot allocate memory|\boom\b/i.test(output)
@@ -580,69 +581,204 @@ async function scopedFileExists(
   return result.exitCode === 0
 }
 
+/** Cap Node heap during demo installs/builds to reduce OOM kills in small E2B VMs. */
+const DEMO_NODE_OPTIONS = '--max-old-space-size=384'
+
+/** Low-memory pnpm install flags for E2B demo screenshots. */
+const PNPM_INSTALL_LOW_MEM =
+  'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1'
+/** Even lower memory: skip lifecycle scripts (native postinstalls) on OOM retry. */
+const PNPM_INSTALL_LOW_MEM_NO_SCRIPTS = `${PNPM_INSTALL_LOW_MEM} --ignore-scripts`
+
+/** Standalone pnpm binary path — avoids PATH issues after bootstrap. */
+const PNPM_STANDALONE_PATH = '/tmp/bopple-pnpm'
 /**
- * Ensure pnpm is on PATH for the demo install. Prefer existing binary; otherwise
- * install globally (small package, low memory vs a full project npm ci).
+ * Pin pnpm 10.x for E2B sandboxes (Node 20).
+ * pnpm 11+ requires Node ≥22.13 and fails on the default E2B image (Node 20.x).
  */
-async function ensurePnpmAvailable(
+const PNPM_VERSION = '10.34.5'
+const PNPM_STANDALONE_URL = `https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linuxstatic-x64`
+
+type PackageManager = 'pnpm' | 'npm' | 'yarn'
+
+/**
+ * Detect the project's package manager from lockfiles + package.json#packageManager.
+ * Demo installs always use pnpm (lower memory than npm ci on small E2B VMs), but we
+ * log the detected manager so pnpm repos are never mistaken for npm.
+ */
+async function detectPackageManager(
+  session: SandboxSession,
+  absPath: string,
+  logs: string[]
+): Promise<PackageManager> {
+  const lockCheck = await runCommand(
+    session,
+    [
+      'if [ -f pnpm-lock.yaml ]; then echo pnpm-lock;',
+      'elif [ -f yarn.lock ]; then echo yarn-lock;',
+      'elif [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then echo npm-lock;',
+      'else echo no-lock; fi',
+    ].join(' '),
+    { cwd: absPath, allowNonZero: true, timeoutMs: 10_000 }
+  )
+  const lockKind = (lockCheck.stdout ?? '').trim()
+
+  const pkgManagerField = await runCommand(
+    session,
+    `node -e "try{const p=require('./package.json');process.stdout.write(String(p.packageManager||''))}catch(e){}"`,
+    { cwd: absPath, allowNonZero: true, timeoutMs: 10_000 }
+  )
+  const field = (pkgManagerField.stdout ?? '').trim().toLowerCase()
+
+  let detected: PackageManager = 'pnpm'
+  if (field.startsWith('pnpm@') || lockKind === 'pnpm-lock') detected = 'pnpm'
+  else if (field.startsWith('yarn@') || lockKind === 'yarn-lock') detected = 'yarn'
+  else if (field.startsWith('npm@') || lockKind === 'npm-lock') detected = 'npm'
+  else detected = 'pnpm'
+
+  logs.push(
+    `Detected package manager hints: lock=${lockKind || 'unknown'}, packageManager=${field || '(none)'} → treating as ${detected} (demo install always uses pnpm)`
+  )
+  return detected
+}
+
+/** Return true if this pnpm binary can run on the sandbox Node version. */
+async function pnpmBinWorks(
+  session: SandboxSession,
+  bin: string,
+  logs: string[]
+): Promise<boolean> {
+  const probe = await runCommand(session, `${shellQuote(bin)} --version`, {
+    allowNonZero: true,
+    timeoutMs: 15_000,
+  })
+  const out = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`.trim()
+  logs.push(`pnpm probe (${bin}) exit ${probe.exitCode}: ${out.slice(0, 300) || '(no output)'}`)
+  if (probe.exitCode !== 0) return false
+  // pnpm 11 on Node 20 may still print a version with warnings, then fail on real commands.
+  if (/requires at least Node\.js/i.test(out) && /Node\.js v?2[2-9]/i.test(out)) {
+    return false
+  }
+  return Boolean((probe.stdout ?? '').trim())
+}
+
+async function resolveCompatiblePnpmBin(
   session: SandboxSession,
   logs: string[]
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<string | null> {
+  const candidates: string[] = []
+
+  const standalone = await runCommand(
+    session,
+    `test -x ${shellQuote(PNPM_STANDALONE_PATH)} && echo ${shellQuote(PNPM_STANDALONE_PATH)}`,
+    { allowNonZero: true, timeoutMs: 10_000 }
+  )
+  if (standalone.exitCode === 0 && (standalone.stdout ?? '').trim()) {
+    candidates.push((standalone.stdout ?? '').trim())
+  }
+
   const which = await runCommand(session, 'which pnpm', {
     allowNonZero: true,
     timeoutMs: 10_000,
   })
   if (which.exitCode === 0 && (which.stdout ?? '').trim()) {
-    logs.push(`pnpm already available: ${(which.stdout ?? '').trim()}`)
-    return { ok: true }
+    candidates.push((which.stdout ?? '').trim())
   }
 
-  logs.push('pnpm not found — installing globally with npm install -g pnpm')
-  try {
-    const install = await runCommand(session, 'npm install -g pnpm', {
-      timeoutMs: COMMAND_TIMEOUT_MS,
-      allowNonZero: true,
-    })
-    const out = (install.stdout || install.stderr || '').trim().slice(-1500)
-    logs.push(`npm install -g pnpm exit ${install.exitCode}\n${out || '(no output)'}`)
-    if (install.exitCode !== 0) {
-      return {
-        ok: false,
-        error: describeInstallFailure('npm install -g pnpm', install.exitCode, out),
-      }
-    }
-
-    const verify = await runCommand(session, 'which pnpm', {
-      allowNonZero: true,
-      timeoutMs: 10_000,
-    })
-    if (verify.exitCode !== 0 || !(verify.stdout ?? '').trim()) {
-      return { ok: false, error: 'pnpm installed globally but is not on PATH' }
-    }
-    logs.push(`pnpm ready: ${(verify.stdout ?? '').trim()}`)
-    return { ok: true }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'failed to install pnpm'
-    logs.push(detail)
-    return {
-      ok: false,
-      error: describeInstallFailure('npm install -g pnpm', undefined, detail),
-    }
+  for (const bin of candidates) {
+    if (await pnpmBinWorks(session, bin, logs)) return bin
+    logs.push(`Ignoring incompatible pnpm at ${bin}`)
   }
+  return null
 }
 
-/** Cap Node heap during demo installs/builds to reduce OOM kills in small E2B VMs. */
-const DEMO_NODE_OPTIONS = '--max-old-space-size=512'
+/**
+ * Ensure a Node-20-compatible pnpm binary is available for the demo install.
+ * Prefer a verified existing binary, then a pinned standalone download (pnpm 10.x).
+ * Never installs project deps with npm, and never bootstraps via `npm install -g`
+ * (that pulls pnpm 11+, which requires Node ≥22.13 and breaks on E2B Node 20).
+ */
+async function ensurePnpmAvailable(
+  session: SandboxSession,
+  logs: string[]
+): Promise<{ ok: true; bin: string } | { ok: false; error: string }> {
+  const nodeVer = await runCommand(session, 'node --version', {
+    allowNonZero: true,
+    timeoutMs: 10_000,
+  })
+  logs.push(`Sandbox Node: ${(nodeVer.stdout ?? nodeVer.stderr ?? '').trim() || 'unknown'}`)
+
+  const existing = await resolveCompatiblePnpmBin(session, logs)
+  if (existing) {
+    logs.push(`pnpm already available (compatible): ${existing}`)
+    return { ok: true, bin: existing }
+  }
+
+  // Static binary first — no npm, no corepack surprises, pinned to Node-20-safe pnpm 10.
+  logs.push(
+    `pnpm not found/compatible — downloading standalone pnpm@${PNPM_VERSION} to ${PNPM_STANDALONE_PATH}`
+  )
+  try {
+    const download = await runCommand(
+      session,
+      [
+        `curl -fsSL --retry 3 --retry-delay 1 -o ${shellQuote(PNPM_STANDALONE_PATH)} ${shellQuote(PNPM_STANDALONE_URL)}`,
+        `&& chmod +x ${shellQuote(PNPM_STANDALONE_PATH)}`,
+        `&& ${shellQuote(PNPM_STANDALONE_PATH)} --version`,
+      ].join(' '),
+      { timeoutMs: COMMAND_TIMEOUT_MS, allowNonZero: true }
+    )
+    const out = (download.stdout || download.stderr || '').trim().slice(-1500)
+    logs.push(`standalone pnpm exit ${download.exitCode}\n${out || '(no output)'}`)
+    if (download.exitCode === 0 && (await pnpmBinWorks(session, PNPM_STANDALONE_PATH, logs))) {
+      logs.push(`pnpm ready (standalone ${PNPM_VERSION}): ${PNPM_STANDALONE_PATH}`)
+      return { ok: true, bin: PNPM_STANDALONE_PATH }
+    }
+  } catch (error) {
+    logs.push(error instanceof Error ? error.message : 'failed to download pnpm')
+  }
+
+  // Fallback: corepack with an explicit Node-20-safe version (never "latest"/pnpm 11).
+  logs.push(`standalone failed — trying corepack prepare pnpm@${PNPM_VERSION}`)
+  try {
+    const corepack = await runCommand(
+      session,
+      `corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && which pnpm`,
+      { timeoutMs: COMMAND_TIMEOUT_MS, allowNonZero: true }
+    )
+    const out = (corepack.stdout || corepack.stderr || '').trim().slice(-1500)
+    logs.push(`corepack prepare exit ${corepack.exitCode}\n${out || '(no output)'}`)
+    if (corepack.exitCode === 0) {
+      const bin = await resolveCompatiblePnpmBin(session, logs)
+      if (bin) {
+        logs.push(`pnpm ready via corepack: ${bin}`)
+        return { ok: true, bin }
+      }
+    }
+  } catch (error) {
+    logs.push(error instanceof Error ? error.message : 'corepack prepare failed')
+  }
+
+  return {
+    ok: false,
+    error: describeInstallFailure(
+      `pnpm@${PNPM_VERSION} bootstrap`,
+      undefined,
+      'Could not install a Node-20-compatible pnpm (avoid pnpm 11+ on E2B Node 20)'
+    ),
+  }
+}
 
 /** Run a pnpm command strictly inside absPath (workingScope). */
 async function runPnpmInScope(
   session: SandboxSession,
   absPath: string,
+  pnpmBin: string,
   pnpmArgs: string,
   logs: string[]
 ): Promise<{ exitCode: number; output: string }> {
   // --dir pins the package root so pnpm never walks up to a parent package.json.
-  const command = `pnpm --dir ${shellQuote(absPath)} ${pnpmArgs}`
+  const command = `${shellQuote(pnpmBin)} --dir ${shellQuote(absPath)} ${pnpmArgs}`
   logs.push(`Running (scoped): ${command}`)
   const result = await runCommand(session, command, {
     cwd: absPath,
@@ -659,15 +795,16 @@ async function runPnpmInScope(
 /**
  * Install deps with pnpm using ONLY workingScope's own package.json.
  * Never reads, writes, or installs from sibling dirs or the repo root.
+ * Never falls back to npm install / npm ci for project dependencies.
  */
 async function installDepsInScope(
   session: SandboxSession,
   absPath: string,
   label: string,
   logs: string[]
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; pnpmBin: string } | { ok: false; error: string }> {
   logs.push(
-    `Install boundary: only ${label}/package.json — never root or sibling lockfiles (pnpm demo install)`
+    `Install boundary: only ${label}/package.json — never root or sibling lockfiles (pnpm demo install, never npm)`
   )
 
   const hasPkg = await scopedFileExists(session, absPath, 'package.json')
@@ -678,8 +815,11 @@ async function installDepsInScope(
     }
   }
 
+  await detectPackageManager(session, absPath, logs)
+
   const pnpmReady = await ensurePnpmAvailable(session, logs)
   if (!pnpmReady.ok) return pnpmReady
+  const { bin: pnpmBin } = pnpmReady
 
   // Drop partial/corrupt node_modules left by agent-side npm attempts so pnpm starts clean.
   logs.push(`Clearing ${label}/node_modules before pnpm install (demo only)`)
@@ -690,26 +830,35 @@ async function installDepsInScope(
   }).catch(() => undefined)
 
   try {
-    // Prefer offline cache when present; never frozen — demo must not fail on missing pnpm-lock.
+    // Always start with low concurrency — default pnpm parallelism OOMs small E2B VMs
+    // mid-download (exit -1 with truncated Progress: lines).
     const install = await runPnpmInScope(
       session,
       absPath,
-      'install --no-frozen-lockfile --prefer-offline',
+      pnpmBin,
+      PNPM_INSTALL_LOW_MEM,
       logs
     )
-    if (install.exitCode === 0) return { ok: true }
+    if (install.exitCode === 0) return { ok: true, pnpmBin }
 
     if (looksLikeOomKill(install.exitCode, install.output)) {
       logs.push(
-        'pnpm install was killed (likely OOM) — retrying once with lower-memory flags'
+        'pnpm install was killed (likely OOM) — retrying once with --ignore-scripts'
       )
+      // Clear partial node_modules from the killed install before retry.
+      await runCommand(session, 'rm -rf node_modules', {
+        cwd: absPath,
+        allowNonZero: true,
+        timeoutMs: 120_000,
+      }).catch(() => undefined)
       const retry = await runPnpmInScope(
         session,
         absPath,
-        'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
+        pnpmBin,
+        PNPM_INSTALL_LOW_MEM_NO_SCRIPTS,
         logs
       )
-      if (retry.exitCode === 0) return { ok: true }
+      if (retry.exitCode === 0) return { ok: true, pnpmBin }
       return {
         ok: false,
         error: describeInstallFailure(
@@ -728,18 +877,24 @@ async function installDepsInScope(
     const detail = error instanceof Error ? error.message : 'pnpm install failed'
     logs.push(detail)
 
-    if (looksLikeOomKill(undefined, detail)) {
+    if (looksLikeOomKill(undefined, detail) || looksLikeOomKill(-1, detail)) {
       logs.push(
-        'pnpm install threw after kill (likely OOM) — retrying once with lower-memory flags'
+        'pnpm install threw after kill (likely OOM) — retrying once with --ignore-scripts'
       )
       try {
+        await runCommand(session, 'rm -rf node_modules', {
+          cwd: absPath,
+          allowNonZero: true,
+          timeoutMs: 120_000,
+        }).catch(() => undefined)
         const retry = await runPnpmInScope(
           session,
           absPath,
-          'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
+          pnpmBin,
+          PNPM_INSTALL_LOW_MEM_NO_SCRIPTS,
           logs
         )
-        if (retry.exitCode === 0) return { ok: true }
+        if (retry.exitCode === 0) return { ok: true, pnpmBin }
         return {
           ok: false,
           error: describeInstallFailure(
@@ -817,19 +972,20 @@ export async function tryGenerateDemo(
     return skipScreenshot(logs, label, 0, err)
   }
 
-  // --- Install once with pnpm (never in a retry loop, never outside absPath) ---
-  logs.push(`=== pnpm install once in ${label} ===`)
+  // --- Install once with pnpm (never npm, never in a retry loop, never outside absPath) ---
+  logs.push(`=== pnpm install once in ${label} (never npm install/ci) ===`)
   const installResult = await installDepsInScope(session, absPath, label, logs)
   if (!installResult.ok) {
     return skipScreenshot(logs, label, 1, installResult.error)
   }
+  const { pnpmBin } = installResult
 
   // Build only when we must serve via `start` (needs a production build).
   // Skip for `dev`/`preview` — full next build OOMs small E2B VMs and isn't needed for screenshots.
   if (scriptName === 'start' && scripts.build) {
     logs.push(`=== pnpm run build once in ${label} (required for start) ===`)
     try {
-      const build = await runPnpmInScope(session, absPath, 'run build', logs)
+      const build = await runPnpmInScope(session, absPath, pnpmBin, 'run build', logs)
       if (build.exitCode !== 0) {
         logs.push(`pnpm run build exited ${build.exitCode} — continuing to try start anyway`)
       }
@@ -858,7 +1014,7 @@ export async function tryGenerateDemo(
     try {
       // --dir pins scope so pnpm never walks up to a parent package.json.
       await session.sandbox.commands.run(
-        `pnpm --dir ${shellQuote(absPath)} run ${scriptName}`,
+        `${shellQuote(pnpmBin)} --dir ${shellQuote(absPath)} run ${scriptName}`,
         {
           cwd: absPath,
           background: true,
