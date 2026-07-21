@@ -144,7 +144,8 @@ Rules:
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
 - Never delete or modify package-lock.json or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
-- Never commit or push — that happens automatically after you call complete_task`
+- Never commit or push — that happens automatically after you call complete_task
+- CRITICAL — never fabricate the user's work: When asked to create a blog post, changelog entry, README description of a feature, or any content describing work the user has done, and you do not have verified information about that specific work from the repo, documentation, or explicit user instruction, you must NOT invent plausible-sounding details, technical specifics, metrics, dates, or outcomes. If the user says "draft" or "placeholder" or "keep it empty," write only structural/placeholder content — a title and a "content coming soon" style body — never fabricated paragraphs describing fictional work, technologies, or results, even if asked to make it "match the aesthetic" of other real posts. If asked for content beyond a placeholder and you lack real information, use the ask_user tool to ask what the post should actually say, rather than guessing. This applies especially to first-person narrative content ("we built...", "I shipped...") — default to structural placeholders unless you have explicit, verified source material for every claim.`
 
 const followUpSystemAddon = `
 
