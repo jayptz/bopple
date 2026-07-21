@@ -49,13 +49,19 @@ function formatCommandError(command: string, error: unknown): Error {
 async function runCommand(
   session: SandboxSession,
   command: string,
-  options?: { cwd?: string; timeoutMs?: number; allowNonZero?: boolean }
+  options?: {
+    cwd?: string
+    timeoutMs?: number
+    allowNonZero?: boolean
+    envs?: Record<string, string>
+  }
 ) {
   try {
     return await session.sandbox.commands.run(command, {
       cwd: options?.cwd,
       timeoutMs: options?.timeoutMs ?? COMMAND_TIMEOUT_MS,
       stdin: false,
+      ...(options?.envs ? { envs: options.envs } : {}),
     })
   } catch (error) {
     if (options?.allowNonZero && error instanceof CommandExitError) {
@@ -489,7 +495,7 @@ async function waitForLocalPort(
 async function freeLocalPort(session: SandboxSession, port: number): Promise<void> {
   await runCommand(
     session,
-    `(fuser -k ${port}/tcp 2>/dev/null || true); (pkill -f "next dev" 2>/dev/null || true); (pkill -f "vite" 2>/dev/null || true); sleep 0.5`,
+    `(fuser -k ${port}/tcp 2>/dev/null || true); (pkill -f "next dev" 2>/dev/null || true); (pkill -f "vite" 2>/dev/null || true); (pkill -f "pnpm.*run" 2>/dev/null || true); sleep 0.5`,
     { allowNonZero: true, timeoutMs: 10_000 }
   ).catch(() => undefined)
 }
@@ -503,21 +509,11 @@ function skipScreenshot(logs: string[], label: string, attempts: number, lastErr
 
 function looksLikeOomKill(exitCode: number | undefined, output: string): boolean {
   if (exitCode === 137 || exitCode === 143) return true
+  // E2B often returns -1 / 255 with empty stdout/stderr when the process is OOM-killed.
+  if ((exitCode === -1 || exitCode === 255) && !output.trim()) return true
   return (
     /\bkilled\b/i.test(output) ||
     /out of memory|cannot allocate memory|\boom\b/i.test(output)
-  )
-}
-
-function looksLikeLockfileOutOfSync(output: string): boolean {
-  return (
-    /package\.json and package-lock\.json/i.test(output) ||
-    /out of sync/i.test(output) ||
-    /npm ci can only install/i.test(output) ||
-    /can only install packages when your package\.json/i.test(output) ||
-    /Missing:\s/i.test(output) ||
-    /Invalid:\s*lock file/i.test(output) ||
-    /does not satisfy/i.test(output)
   )
 }
 
@@ -531,12 +527,6 @@ function describeInstallFailure(
     return (
       `${command} was killed by the OS (likely out of memory / OOM; exit ${exitCode ?? 'unknown'}). ` +
       `Output: ${snippet}`
-    )
-  }
-  if (looksLikeLockfileOutOfSync(output)) {
-    return (
-      `${command} failed because package-lock.json is out of sync with package.json ` +
-      `(exit ${exitCode ?? 'unknown'}). Output: ${snippet}`
     )
   }
   return `${command} failed (exit ${exitCode ?? 'unknown'}): ${snippet}`
@@ -555,28 +545,85 @@ async function scopedFileExists(
   return result.exitCode === 0
 }
 
-async function runNpmInScope(
+/**
+ * Ensure pnpm is on PATH for the demo install. Prefer existing binary; otherwise
+ * install globally (small package, low memory vs a full project npm ci).
+ */
+async function ensurePnpmAvailable(
+  session: SandboxSession,
+  logs: string[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const which = await runCommand(session, 'which pnpm', {
+    allowNonZero: true,
+    timeoutMs: 10_000,
+  })
+  if (which.exitCode === 0 && (which.stdout ?? '').trim()) {
+    logs.push(`pnpm already available: ${(which.stdout ?? '').trim()}`)
+    return { ok: true }
+  }
+
+  logs.push('pnpm not found — installing globally with npm install -g pnpm')
+  try {
+    const install = await runCommand(session, 'npm install -g pnpm', {
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      allowNonZero: true,
+    })
+    const out = (install.stdout || install.stderr || '').trim().slice(-1500)
+    logs.push(`npm install -g pnpm exit ${install.exitCode}\n${out || '(no output)'}`)
+    if (install.exitCode !== 0) {
+      return {
+        ok: false,
+        error: describeInstallFailure('npm install -g pnpm', install.exitCode, out),
+      }
+    }
+
+    const verify = await runCommand(session, 'which pnpm', {
+      allowNonZero: true,
+      timeoutMs: 10_000,
+    })
+    if (verify.exitCode !== 0 || !(verify.stdout ?? '').trim()) {
+      return { ok: false, error: 'pnpm installed globally but is not on PATH' }
+    }
+    logs.push(`pnpm ready: ${(verify.stdout ?? '').trim()}`)
+    return { ok: true }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'failed to install pnpm'
+    logs.push(detail)
+    return {
+      ok: false,
+      error: describeInstallFailure('npm install -g pnpm', undefined, detail),
+    }
+  }
+}
+
+/** Cap Node heap during demo installs/builds to reduce OOM kills in small E2B VMs. */
+const DEMO_NODE_OPTIONS = '--max-old-space-size=512'
+
+/** Run a pnpm command strictly inside absPath (workingScope). */
+async function runPnpmInScope(
   session: SandboxSession,
   absPath: string,
-  npmArgs: string,
+  pnpmArgs: string,
   logs: string[]
 ): Promise<{ exitCode: number; output: string }> {
-  // --prefix pins the package root explicitly; cwd matches so nothing resolves to repo root.
-  const command = `npm ${npmArgs} --prefix ${shellQuote(absPath)}`
+  // --dir pins the package root so pnpm never walks up to a parent package.json.
+  const command = `pnpm --dir ${shellQuote(absPath)} ${pnpmArgs}`
   logs.push(`Running (scoped): ${command}`)
   const result = await runCommand(session, command, {
     cwd: absPath,
     timeoutMs: COMMAND_TIMEOUT_MS,
     allowNonZero: true,
+    envs: { NODE_OPTIONS: DEMO_NODE_OPTIONS },
   })
+  // Prefer stderr when stdout is empty — pnpm often logs progress to stderr.
   const output = (result.stdout || result.stderr || '').trim().slice(-2500)
   logs.push(`${command} exit ${result.exitCode}\n${output || '(no output)'}`)
   return { exitCode: result.exitCode, output }
 }
 
 /**
- * Install deps using ONLY workingScope's own package.json / package-lock.json.
- * Never reads, writes, or deletes lockfiles in sibling dirs or the repo root.
+ * Install deps with pnpm using ONLY workingScope's own package.json.
+ * Never reads, writes, or installs from sibling dirs or the repo root.
  */
 async function installDepsInScope(
   session: SandboxSession,
@@ -585,149 +632,101 @@ async function installDepsInScope(
   logs: string[]
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   logs.push(
-    `Install boundary: only ${label}/package.json and ${label}/package-lock.json — never root or sibling lockfiles`
+    `Install boundary: only ${label}/package.json — never root or sibling lockfiles (pnpm demo install)`
   )
 
   const hasPkg = await scopedFileExists(session, absPath, 'package.json')
   if (!hasPkg) {
     return {
       ok: false,
-      error: `No package.json at ${label}/package.json — refusing to install from any other directory`,
+      error: `No package.json at ${label === '.' ? 'package.json' : `${label}/package.json`} — refusing to install from any other directory`,
     }
   }
 
-  const hasLock =
-    (await scopedFileExists(session, absPath, 'package-lock.json')) ||
-    (await scopedFileExists(session, absPath, 'npm-shrinkwrap.json'))
+  const pnpmReady = await ensurePnpmAvailable(session, logs)
+  if (!pnpmReady.ok) return pnpmReady
 
-  async function npmInstallFallback(reason: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    logs.push(`${reason} — falling back to npm install in ${label} only (demo step)`)
-    try {
-      const install = await runNpmInScope(session, absPath, 'install', logs)
-      if (install.exitCode === 0) return { ok: true }
-      return {
-        ok: false,
-        error: describeInstallFailure('npm install', install.exitCode, install.output),
-      }
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : 'npm install failed'
-      logs.push(detail)
-      return { ok: false, error: detail }
-    }
-  }
-
-  if (!hasLock) {
-    return npmInstallFallback(
-      `No package-lock.json in ${label} (will not use a root/sibling lockfile)`
-    )
-  }
-
-  logs.push(`Found ${label}/package-lock.json — attempting npm ci in ${label} only`)
+  // Drop partial/corrupt node_modules left by agent-side npm attempts so pnpm starts clean.
+  logs.push(`Clearing ${label}/node_modules before pnpm install (demo only)`)
+  await runCommand(session, 'rm -rf node_modules', {
+    cwd: absPath,
+    allowNonZero: true,
+    timeoutMs: 120_000,
+  }).catch(() => undefined)
 
   try {
-    const first = await runNpmInScope(session, absPath, 'ci', logs)
-    if (first.exitCode === 0) return { ok: true }
+    // Prefer offline cache when present; never frozen — demo must not fail on missing pnpm-lock.
+    const install = await runPnpmInScope(
+      session,
+      absPath,
+      'install --no-frozen-lockfile --prefer-offline',
+      logs
+    )
+    if (install.exitCode === 0) return { ok: true }
 
-    if (looksLikeOomKill(first.exitCode, first.output)) {
+    if (looksLikeOomKill(install.exitCode, install.output)) {
       logs.push(
-        'npm ci was killed (likely OOM) — retrying once with --prefer-offline --no-audit --no-fund'
+        'pnpm install was killed (likely OOM) — retrying once with lower-memory flags'
       )
-      try {
-        const retry = await runNpmInScope(
-          session,
-          absPath,
-          'ci --prefer-offline --no-audit --no-fund',
-          logs
-        )
-        if (retry.exitCode === 0) return { ok: true }
-
-        if (looksLikeLockfileOutOfSync(retry.output)) {
-          return npmInstallFallback(
-            `package-lock.json in ${label} is out of sync with package.json (after OOM retry)`
-          )
-        }
-
-        return {
-          ok: false,
-          error: describeInstallFailure(
-            'npm ci --prefer-offline --no-audit --no-fund',
-            retry.exitCode,
-            retry.output
-          ),
-        }
-      } catch (retryError) {
-        const retryDetail =
-          retryError instanceof Error ? retryError.message : 'npm ci retry failed'
-        logs.push(retryDetail)
-        return {
-          ok: false,
-          error: describeInstallFailure(
-            'npm ci --prefer-offline --no-audit --no-fund',
-            undefined,
-            retryDetail
-          ),
-        }
+      const retry = await runPnpmInScope(
+        session,
+        absPath,
+        'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
+        logs
+      )
+      if (retry.exitCode === 0) return { ok: true }
+      return {
+        ok: false,
+        error: describeInstallFailure(
+          'pnpm install (OOM retry)',
+          retry.exitCode,
+          retry.output
+        ),
       }
     }
 
-    if (looksLikeLockfileOutOfSync(first.output)) {
-      return npmInstallFallback(
-        `package-lock.json in ${label} is out of sync with package.json`
-      )
+    return {
+      ok: false,
+      error: describeInstallFailure('pnpm install', install.exitCode, install.output),
     }
-
-    // Other npm ci failures: still try scoped npm install for the demo only.
-    return npmInstallFallback(`npm ci failed in ${label}`)
   } catch (error) {
-    const detail = error instanceof Error ? error.message : 'npm ci failed'
+    const detail = error instanceof Error ? error.message : 'pnpm install failed'
     logs.push(detail)
 
     if (looksLikeOomKill(undefined, detail)) {
       logs.push(
-        'npm ci threw after kill (likely OOM) — retrying once with --prefer-offline --no-audit --no-fund'
+        'pnpm install threw after kill (likely OOM) — retrying once with lower-memory flags'
       )
       try {
-        const retry = await runNpmInScope(
+        const retry = await runPnpmInScope(
           session,
           absPath,
-          'ci --prefer-offline --no-audit --no-fund',
+          'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
           logs
         )
         if (retry.exitCode === 0) return { ok: true }
-        if (looksLikeLockfileOutOfSync(retry.output)) {
-          return npmInstallFallback(
-            `package-lock.json in ${label} is out of sync with package.json (after OOM retry)`
-          )
-        }
         return {
           ok: false,
           error: describeInstallFailure(
-            'npm ci --prefer-offline --no-audit --no-fund',
+            'pnpm install (OOM retry)',
             retry.exitCode,
             retry.output
           ),
         }
       } catch (retryError) {
         const retryDetail =
-          retryError instanceof Error ? retryError.message : 'npm ci retry failed'
+          retryError instanceof Error ? retryError.message : 'pnpm install retry failed'
         return {
           ok: false,
-          error: describeInstallFailure(
-            'npm ci --prefer-offline --no-audit --no-fund',
-            undefined,
-            retryDetail
-          ),
+          error: describeInstallFailure('pnpm install (OOM retry)', undefined, retryDetail),
         }
       }
     }
 
-    if (looksLikeLockfileOutOfSync(detail)) {
-      return npmInstallFallback(
-        `package-lock.json in ${label} is out of sync with package.json`
-      )
+    return {
+      ok: false,
+      error: describeInstallFailure('pnpm install', undefined, detail),
     }
-
-    return { ok: false, error: detail }
   }
 }
 
@@ -754,7 +753,7 @@ export async function tryGenerateDemo(
     return skipScreenshot(logs, label, 0, cwdError)
   }
 
-  // Step 4: verify package.json at the exact scoped path before any npm command.
+  // Step 4: verify package.json at the exact scoped path before any install.
   const hasPackageJson = await packageJsonExistsInScope(session, label)
   if (!hasPackageJson) {
     const err = `No package.json at ${label === '.' ? 'package.json' : `${label}/package.json`} — skipped dependency install and screenshot`
@@ -783,24 +782,27 @@ export async function tryGenerateDemo(
     return skipScreenshot(logs, label, 0, err)
   }
 
-  // --- Install once (never in a retry loop, never outside absPath) ---
-  logs.push(`=== npm install/ci once in ${label} ===`)
+  // --- Install once with pnpm (never in a retry loop, never outside absPath) ---
+  logs.push(`=== pnpm install once in ${label} ===`)
   const installResult = await installDepsInScope(session, absPath, label, logs)
   if (!installResult.ok) {
     return skipScreenshot(logs, label, 1, installResult.error)
   }
 
-  // --- Build once (best-effort; `dev` may still work if build fails) ---
-  if (scripts.build) {
-    logs.push(`=== npm run build once in ${label} ===`)
+  // Build only when we must serve via `start` (needs a production build).
+  // Skip for `dev`/`preview` — full next build OOMs small E2B VMs and isn't needed for screenshots.
+  if (scriptName === 'start' && scripts.build) {
+    logs.push(`=== pnpm run build once in ${label} (required for start) ===`)
     try {
-      const build = await runNpmInScope(session, absPath, 'run build', logs)
+      const build = await runPnpmInScope(session, absPath, 'run build', logs)
       if (build.exitCode !== 0) {
-        logs.push(`npm run build exited ${build.exitCode} — continuing to try dev server`)
+        logs.push(`pnpm run build exited ${build.exitCode} — continuing to try start anyway`)
       }
     } catch (error) {
       logs.push(error instanceof Error ? error.message : 'build failed')
     }
+  } else if (scripts.build && scriptName !== 'start') {
+    logs.push(`Skipping pnpm run build — using ${scriptName} for screenshot (saves memory)`)
   }
 
   // --- Start server: at most DEV_SERVER_START_ATTEMPTS tries, same cwd every time ---
@@ -808,7 +810,7 @@ export async function tryGenerateDemo(
 
   for (let attempt = 1; attempt <= DEV_SERVER_START_ATTEMPTS; attempt++) {
     logs.push(
-      `=== start npm run ${scriptName} attempt ${attempt}/${DEV_SERVER_START_ATTEMPTS} (cwd: ${label}) ===`
+      `=== start pnpm run ${scriptName} attempt ${attempt}/${DEV_SERVER_START_ATTEMPTS} (cwd: ${label}) ===`
     )
     await freeLocalPort(session, port)
 
@@ -819,19 +821,24 @@ export async function tryGenerateDemo(
     }
 
     try {
-      // Background start still pins --prefix so npm never walks up to a parent package.
+      // --dir pins scope so pnpm never walks up to a parent package.json.
       await session.sandbox.commands.run(
-        `npm run ${scriptName} --prefix ${shellQuote(absPath)}`,
+        `pnpm --dir ${shellQuote(absPath)} run ${scriptName}`,
         {
           cwd: absPath,
           background: true,
           stdin: false,
-          envs: { PORT: String(port), HOST: '0.0.0.0', HOSTNAME: '0.0.0.0' },
+          envs: {
+            PORT: String(port),
+            HOST: '0.0.0.0',
+            HOSTNAME: '0.0.0.0',
+            NODE_OPTIONS: DEMO_NODE_OPTIONS,
+          },
           timeoutMs: 0,
         }
       )
     } catch (error) {
-      lastError = error instanceof Error ? error.message : `failed to start npm run ${scriptName}`
+      lastError = error instanceof Error ? error.message : `failed to start pnpm run ${scriptName}`
       logs.push(lastError)
       continue
     }
