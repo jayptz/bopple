@@ -144,6 +144,7 @@ Rules:
 - If the working scope has pnpm-lock.yaml or package.json#packageManager starts with "pnpm@", use pnpm (never npm install / npm ci) when you must install for tests. Prefer yarn when yarn.lock is present. Only use npm when that is clearly the project's package manager.
 - When a reference image is attached, treat it as the visual target — match layout, spacing, colors, and typography as closely as the codebase allows
 - When the user sends follow-up feedback (e.g. "make it shorter"), treat it as continuing the SAME task and branch — refine what you already did, don't start over
+=
 - Never delete or modify lockfiles (pnpm-lock.yaml, package-lock.json, yarn.lock) or package.json outside your task's working directory, under any circumstances, even to troubleshoot a failing build
 - Never commit or push — that happens automatically after you call complete_task`
 

@@ -430,7 +430,7 @@ export const codingAgentJob = task({
         const wipScope =
           (typeof taskRow.working_scope === 'string' && taskRow.working_scope.trim()
             ? taskRow.working_scope.trim()
-            : null) ?? deriveWorkingScope(writtenPaths)
+            : null) ?? (await deriveWorkingScope(session, writtenPaths))
 
         await supabase
           .from('tasks')
@@ -474,7 +474,7 @@ export const codingAgentJob = task({
         taskRow.repo_full_name
       )
 
-      const derivedScope = deriveWorkingScope(writtenPaths)
+      const derivedScope = await deriveWorkingScope(session, writtenPaths)
       const priorScope =
         typeof taskRow.working_scope === 'string' && taskRow.working_scope.trim()
           ? taskRow.working_scope.trim()

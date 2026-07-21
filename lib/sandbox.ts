@@ -365,10 +365,46 @@ const SERVER_READY_MAX_ATTEMPTS = 20
 const SERVER_READY_POLL_MS = 1_000
 
 /**
- * Derive the working directory scope from paths the agent wrote during the task.
- * e.g. "website3/lib/blog-posts.ts" → "website3"; root-level files → "."
+ * Walk up from a written file path and return the deepest directory (relative to
+ * repo root) that contains a package.json. Falls back to "." (repo root).
+ *
+ * Examples:
+ * - website3/lib/blog-posts.ts + website3/package.json → "website3"
+ * - app/dashboard/page.tsx + root package.json only → "."
  */
-export function deriveWorkingScope(writtenPaths: string[]): string | null {
+async function resolvePackageScopeForPath(
+  session: SandboxSession,
+  relativePath: string
+): Promise<string> {
+  const parts = relativePath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean)
+
+  // Directory containing the file (drop the filename). Root-level files → [].
+  const dirParts = parts.length <= 1 ? [] : parts.slice(0, -1)
+
+  for (let depth = dirParts.length; depth >= 1; depth--) {
+    const candidate = dirParts.slice(0, depth).join('/')
+    if (await packageJsonExistsInScope(session, candidate)) {
+      return candidate
+    }
+  }
+
+  // Repo root (or no package.json anywhere — still treat as root, never invent "app").
+  return '.'
+}
+
+/**
+ * Derive workingScope from files the agent wrote by finding the nearest
+ * package.json ancestor of each path — not the first path segment.
+ */
+export async function deriveWorkingScope(
+  session: SandboxSession,
+  writtenPaths: string[]
+): Promise<string | null> {
   const normalized = writtenPaths
     .map((p) => p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '').trim())
     .filter(Boolean)
@@ -377,12 +413,11 @@ export function deriveWorkingScope(writtenPaths: string[]): string | null {
 
   const counts = new Map<string, number>()
   for (const path of normalized) {
-    const parts = path.split('/').filter(Boolean)
-    const scope = parts.length <= 1 ? '.' : parts[0]
+    const scope = await resolvePackageScopeForPath(session, path)
     counts.set(scope, (counts.get(scope) ?? 0) + 1)
   }
 
-  // Prefer a subdirectory scope over "." when both appear.
+  // Prefer a real subproject scope over "." when both appear.
   const ranked = Array.from(counts.entries()).sort((a, b) => {
     if (a[0] === '.' && b[0] !== '.') return 1
     if (b[0] === '.' && a[0] !== '.') return -1
