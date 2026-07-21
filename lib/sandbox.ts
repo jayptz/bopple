@@ -509,8 +509,9 @@ function skipScreenshot(logs: string[], label: string, attempts: number, lastErr
 
 function looksLikeOomKill(exitCode: number | undefined, output: string): boolean {
   if (exitCode === 137 || exitCode === 143) return true
-  // E2B often returns -1 / 255 with empty stdout/stderr when the process is OOM-killed.
-  if ((exitCode === -1 || exitCode === 255) && !output.trim()) return true
+  // E2B often returns -1 / 255 when the process is OOM-killed — sometimes with
+  // empty output, sometimes with truncated pnpm "Progress:" lines mid-download.
+  if (exitCode === -1 || exitCode === 255) return true
   return (
     /\bkilled\b/i.test(output) ||
     /out of memory|cannot allocate memory|\boom\b/i.test(output)
@@ -546,7 +547,13 @@ async function scopedFileExists(
 }
 
 /** Cap Node heap during demo installs/builds to reduce OOM kills in small E2B VMs. */
-const DEMO_NODE_OPTIONS = '--max-old-space-size=512'
+const DEMO_NODE_OPTIONS = '--max-old-space-size=384'
+
+/** Low-memory pnpm install flags for E2B demo screenshots. */
+const PNPM_INSTALL_LOW_MEM =
+  'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1'
+/** Even lower memory: skip lifecycle scripts (native postinstalls) on OOM retry. */
+const PNPM_INSTALL_LOW_MEM_NO_SCRIPTS = `${PNPM_INSTALL_LOW_MEM} --ignore-scripts`
 
 /** Standalone pnpm binary path — avoids PATH issues after bootstrap. */
 const PNPM_STANDALONE_PATH = '/tmp/bopple-pnpm'
@@ -788,25 +795,32 @@ async function installDepsInScope(
   }).catch(() => undefined)
 
   try {
-    // Prefer offline cache when present; never frozen — demo must not fail on missing pnpm-lock.
+    // Always start with low concurrency — default pnpm parallelism OOMs small E2B VMs
+    // mid-download (exit -1 with truncated Progress: lines).
     const install = await runPnpmInScope(
       session,
       absPath,
       pnpmBin,
-      'install --no-frozen-lockfile --prefer-offline',
+      PNPM_INSTALL_LOW_MEM,
       logs
     )
     if (install.exitCode === 0) return { ok: true, pnpmBin }
 
     if (looksLikeOomKill(install.exitCode, install.output)) {
       logs.push(
-        'pnpm install was killed (likely OOM) — retrying once with lower-memory flags'
+        'pnpm install was killed (likely OOM) — retrying once with --ignore-scripts'
       )
+      // Clear partial node_modules from the killed install before retry.
+      await runCommand(session, 'rm -rf node_modules', {
+        cwd: absPath,
+        allowNonZero: true,
+        timeoutMs: 120_000,
+      }).catch(() => undefined)
       const retry = await runPnpmInScope(
         session,
         absPath,
         pnpmBin,
-        'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
+        PNPM_INSTALL_LOW_MEM_NO_SCRIPTS,
         logs
       )
       if (retry.exitCode === 0) return { ok: true, pnpmBin }
@@ -828,16 +842,21 @@ async function installDepsInScope(
     const detail = error instanceof Error ? error.message : 'pnpm install failed'
     logs.push(detail)
 
-    if (looksLikeOomKill(undefined, detail)) {
+    if (looksLikeOomKill(undefined, detail) || looksLikeOomKill(-1, detail)) {
       logs.push(
-        'pnpm install threw after kill (likely OOM) — retrying once with lower-memory flags'
+        'pnpm install threw after kill (likely OOM) — retrying once with --ignore-scripts'
       )
       try {
+        await runCommand(session, 'rm -rf node_modules', {
+          cwd: absPath,
+          allowNonZero: true,
+          timeoutMs: 120_000,
+        }).catch(() => undefined)
         const retry = await runPnpmInScope(
           session,
           absPath,
           pnpmBin,
-          'install --no-frozen-lockfile --prefer-offline --child-concurrency=1 --network-concurrency=1',
+          PNPM_INSTALL_LOW_MEM_NO_SCRIPTS,
           logs
         )
         if (retry.exitCode === 0) return { ok: true, pnpmBin }
