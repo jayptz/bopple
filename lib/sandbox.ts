@@ -94,7 +94,9 @@ export async function createSandboxSession(
     }
   }
 
-  const sandbox = await Sandbox.create({ timeoutMs: SANDBOX_TIMEOUT_MS })
+  const sandbox = await Sandbox.create('bopple-heavy', {
+    timeoutMs: SANDBOX_TIMEOUT_MS,
+  })
   return { session: { sandbox, repoPath: REPO_PATH }, resumed: false }
 }
 
