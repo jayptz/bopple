@@ -89,6 +89,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
   const [feedback, setFeedback] = useState('')
   const [sending, setSending] = useState(false)
   const [resolving, setResolving] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const canFeedback =
@@ -100,6 +101,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
     task.status === 'failed' ||
     (Boolean(task.pr_url) && task.status !== 'done' && task.status !== 'queued')
 
+  const canStop = task.status === 'running'
   const showActivity =
     task.status === 'running' || task.status === 'awaiting_feedback'
   const logs = task.agent_logs ?? []
@@ -157,6 +159,24 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
       setError(err instanceof Error ? err.message : 'Failed to resolve task')
     } finally {
       setResolving(false)
+    }
+  }
+
+  async function stopTask() {
+    setStopping(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/stop`, { method: 'POST' })
+      const data = (await res.json()) as { error?: string; task?: Task }
+      if (!res.ok) {
+        throw new Error(data.error ?? 'Failed to stop task')
+      }
+      if (data.task) onTaskUpdated?.(data.task)
+      else onTaskUpdated?.({ ...task, interrupt_requested_at: new Date().toISOString() })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop task')
+    } finally {
+      setStopping(false)
     }
   }
 
@@ -253,7 +273,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
         </pre>
       )}
 
-      {(canFeedback || feedbackHistory.length > 0) && (
+      {(canFeedback || feedbackHistory.length > 0 || canStop || showResolve) && (
         <div className="pt-2 border-t border-zinc-800 space-y-3">
           <FeedbackHistory entries={feedbackHistory} />
 
@@ -278,6 +298,16 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
             {canFeedback && (
               <Button size="sm" onClick={submitFeedback} disabled={sending || !feedback.trim()}>
                 {sending ? 'Sending...' : 'Send feedback'}
+              </Button>
+            )}
+            {canStop && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={stopTask}
+                disabled={stopping || Boolean(task.interrupt_requested_at)}
+              >
+                {stopping || task.interrupt_requested_at ? 'Stopping...' : 'Stop'}
               </Button>
             )}
             {showResolve && (

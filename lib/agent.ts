@@ -7,6 +7,11 @@ import {
   runInRepo,
   writeRepoFile,
 } from './sandbox'
+import {
+  formatInterruptFeedback,
+  HardInterruptError,
+  HARD_INTERRUPT_MS,
+} from './interrupt'
 
 export interface AgentMessage {
   role: 'user' | 'assistant'
@@ -22,6 +27,12 @@ export interface AgentRunResult {
   feedbackPrompt: string | null
   /** Route to capture when the user asked for a screenshot; otherwise null. */
   screenshotRoute: string | null
+  /** True when the loop stopped due to a user interrupt (soft or hard). */
+  interrupted?: boolean
+  /** Tool name we stopped after (soft) or during (hard); null if before any tool. */
+  interruptedAfterTool?: string | null
+  /** True when soft wait timed out and the sandbox was killed. */
+  hardInterrupted?: boolean
 }
 
 const MAX_TURNS = 30
@@ -261,6 +272,13 @@ export async function runAgentLoop(params: {
   onToolCall?: (toolName: string, input: Record<string, unknown>) => void | Promise<void>
   /** Fired when the model narrates before tools — use for Telegram/dashboard progress. */
   onNarration?: (text: string) => void | Promise<void>
+  /** Polled between tool calls; when true, soft-stop like ask_user. */
+  shouldInterrupt?: () => boolean | Promise<boolean>
+  /**
+   * Called when a tool overruns HARD_INTERRUPT_MS after interrupt was requested.
+   * Should kill the sandbox (hard stop).
+   */
+  onHardInterrupt?: (toolName: string) => void | Promise<void>
 }): Promise<AgentRunResult> {
   const {
     session,
@@ -272,6 +290,8 @@ export async function runAgentLoop(params: {
     referenceImageMediaType = 'image/jpeg',
     onToolCall,
     onNarration,
+    shouldInterrupt,
+    onHardInterrupt,
   } = params
   const client = new Anthropic({ apiKey })
 
@@ -311,12 +331,89 @@ export async function runAgentLoop(params: {
   }
 
   let screenshotRoute: string | null = null
+  let lastCompletedTool: string | null = null
   const isFollowUp = priorMessages.length > 0
   const systemPrompt = isFollowUp
     ? `${systemPromptBase}${followUpSystemAddon}`
     : systemPromptBase
 
+  function interruptResult(hard: boolean): AgentRunResult {
+    const feedback = formatInterruptFeedback(lastCompletedTool, hard)
+    transcript.push({ role: 'assistant', content: feedback })
+    return {
+      messages: transcript,
+      prTitle: '',
+      prBody: '',
+      summary: feedback,
+      needsFeedback: true,
+      feedbackPrompt: feedback,
+      screenshotRoute,
+      interrupted: true,
+      interruptedAfterTool: lastCompletedTool,
+      hardInterrupted: hard,
+    }
+  }
+
+  async function checkSoftInterrupt(): Promise<AgentRunResult | null> {
+    if (!shouldInterrupt) return null
+    if (await shouldInterrupt()) {
+      return interruptResult(false)
+    }
+    return null
+  }
+
+  /**
+   * Run a tool; if interrupt is requested mid-flight and the tool exceeds
+   * HARD_INTERRUPT_MS, escalate to hard kill via onHardInterrupt.
+   */
+  async function executeToolMaybeHard(
+    name: string,
+    input: Record<string, unknown>
+  ): Promise<Awaited<ReturnType<typeof executeTool>>> {
+    if (!shouldInterrupt) {
+      return executeTool(session, name, input)
+    }
+
+    let interruptSeenAt: number | null = null
+    let hardTimer: ReturnType<typeof setInterval> | null = null
+    let hardReject: ((err: HardInterruptError) => void) | null = null
+
+    const hardPromise = new Promise<never>((_, reject) => {
+      hardReject = reject
+    })
+
+    hardTimer = setInterval(() => {
+      void (async () => {
+        try {
+          const flagged = await shouldInterrupt()
+          if (!flagged) return
+          if (interruptSeenAt == null) interruptSeenAt = Date.now()
+          const waited = Date.now() - interruptSeenAt
+          if (waited >= HARD_INTERRUPT_MS && hardReject) {
+            try {
+              await onHardInterrupt?.(name)
+            } catch {
+              // Best-effort kill — still reject so the loop stops.
+            }
+            hardReject(new HardInterruptError(name, waited))
+          }
+        } catch {
+          // Ignore poll errors; soft path still works after the tool returns.
+        }
+      })()
+    }, 1000)
+
+    try {
+      return await Promise.race([executeTool(session, name, input), hardPromise])
+    } finally {
+      if (hardTimer) clearInterval(hardTimer)
+    }
+  }
+
   for (let turn = 0; turn < MAX_TURNS; turn++) {
+    const early = await checkSoftInterrupt()
+    if (early) return early
+
     const response = await client.messages.create({
       model,
       max_tokens: 8096,
@@ -360,12 +457,32 @@ export async function runAgentLoop(params: {
     for (const toolUse of toolUses) {
       if (toolUse.type !== 'tool_use') continue
 
+      // Soft interrupt before starting the next tool (same pause point as ask_user).
+      const before = await checkSoftInterrupt()
+      if (before) return before
+
       const input = toolUse.input as Record<string, unknown>
       if (onToolCall) {
         await onToolCall(toolUse.name, input)
       }
 
-      const result = await executeTool(session, toolUse.name, input)
+      let result: Awaited<ReturnType<typeof executeTool>>
+      try {
+        result = await executeToolMaybeHard(toolUse.name, input)
+      } catch (error) {
+        if (error instanceof HardInterruptError) {
+          lastCompletedTool = error.toolName
+          return interruptResult(true)
+        }
+        // Sandbox may die mid-tool after a hard kill race — treat as hard interrupt.
+        if (shouldInterrupt && (await shouldInterrupt())) {
+          lastCompletedTool = toolUse.name
+          return interruptResult(true)
+        }
+        throw error
+      }
+
+      lastCompletedTool = toolUse.name
 
       if (result.screenshotRoute) {
         screenshotRoute = result.screenshotRoute
@@ -392,6 +509,10 @@ export async function runAgentLoop(params: {
         tool_use_id: toolUse.id,
         content: result.output,
       })
+
+      // Soft interrupt after the current tool finishes — do not start the next one.
+      const after = await checkSoftInterrupt()
+      if (after) return after
     }
 
     anthropicMessages.push({ role: 'assistant', content: response.content })

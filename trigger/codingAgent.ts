@@ -25,6 +25,7 @@ import {
   pushBranch,
   tryGenerateDemo,
 } from '../lib/sandbox'
+import { HARD_INTERRUPT_MS } from '../lib/interrupt'
 import type { AgentLogEntry, AgentLogType, User } from '../types'
 
 function getSupabase() {
@@ -273,6 +274,8 @@ export const codingAgentJob = task({
         status: 'running',
         started_at: taskRow.started_at ?? new Date().toISOString(),
         error_message: null,
+        // Clear any stale interrupt from a previous run; fresh feedback resumes cleanly.
+        interrupt_requested_at: null,
         agent_logs: feedback ? taskRow.agent_logs ?? [] : [],
       })
       .eq('id', taskId)
@@ -360,6 +363,29 @@ export const codingAgentJob = task({
         apiKey,
         priorMessages: feedback ? priorMessages : [],
         referenceImageBase64: taskRow.reference_image_base64 as string | null,
+        shouldInterrupt: async () => {
+          const { data } = await supabase
+            .from('tasks')
+            .select('interrupt_requested_at')
+            .eq('id', taskId)
+            .maybeSingle()
+          return Boolean(data?.interrupt_requested_at)
+        },
+        onHardInterrupt: async (toolName) => {
+          const ts = new Date().toISOString()
+          console.log(
+            `[interrupt] hard task=${taskId} tool=${toolName} at=${ts} waitedMs>=${HARD_INTERRUPT_MS}`
+          )
+          await appendAgentLog(
+            supabase,
+            taskId,
+            'thinking',
+            `Hard interrupt while running ${toolName} (no return within ${HARD_INTERRUPT_MS / 1000}s) — killing sandbox`
+          )
+          if (session) {
+            await closeSandbox(session, false).catch(() => undefined)
+          }
+        },
         onNarration: async (text) => {
           const line = text.split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? text
           const short = line.slice(0, 280)
@@ -405,40 +431,64 @@ export const codingAgentJob = task({
           agentResult.feedbackPrompt?.trim() ||
           'I need a bit more info to continue. Reply in this chat.'
 
+        if (agentResult.interrupted) {
+          const mode = agentResult.hardInterrupted ? 'hard' : 'soft'
+          const tool = agentResult.interruptedAfterTool ?? '(none yet)'
+          const ts = new Date().toISOString()
+          console.log(
+            `[interrupt] ${mode} task=${taskId} stoppedAt=${tool} at=${ts}`
+          )
+          await appendAgentLog(
+            supabase,
+            taskId,
+            'thinking',
+            agentResult.hardInterrupted
+              ? `Interrupted (hard) during ${tool}`
+              : `Interrupted (soft) after ${tool}`
+          )
+        }
+
         await appendAgentLog(supabase, taskId, 'thinking', feedbackQuestion)
 
         // Persist WIP so resume works even if the VM expires.
         let wipDiff = ''
-        try {
-          const wip = await commitAndPush(
-            session,
-            githubToken,
-            `wip(bopple): awaiting feedback`,
-            branchName,
-            taskRow.repo_full_name
-          )
-          wipDiff = wip.diffText
-        } catch {
+        // Hard interrupt already killed the sandbox — skip commit/push.
+        if (!agentResult.hardInterrupted) {
           try {
-            await pushBranch(session, githubToken, branchName, taskRow.repo_full_name)
-            wipDiff = await getWorkingDiff(session).catch(() => '')
+            const wip = await commitAndPush(
+              session,
+              githubToken,
+              `wip(bopple): awaiting feedback`,
+              branchName,
+              taskRow.repo_full_name
+            )
+            wipDiff = wip.diffText
           } catch {
-            // Best-effort — sandbox resume can still recover local work.
+            try {
+              await pushBranch(session, githubToken, branchName, taskRow.repo_full_name)
+              wipDiff = await getWorkingDiff(session).catch(() => '')
+            } catch {
+              // Best-effort — sandbox resume can still recover local work.
+            }
           }
         }
 
         const wipScope =
           (typeof taskRow.working_scope === 'string' && taskRow.working_scope.trim()
             ? taskRow.working_scope.trim()
-            : null) ?? (await deriveWorkingScope(session, writtenPaths))
+            : null) ??
+          (agentResult.hardInterrupted
+            ? null
+            : await deriveWorkingScope(session, writtenPaths))
 
         await supabase
           .from('tasks')
           .update({
             status: 'awaiting_feedback',
             conversation: updatedConversation,
-            sandbox_id: session.sandbox.sandboxId,
+            sandbox_id: agentResult.hardInterrupted ? null : session.sandbox.sandboxId,
             branch_name: branchName,
+            interrupt_requested_at: null,
             ...(wipDiff ? { diff_text: wipDiff } : {}),
             ...(wipScope && !taskRow.working_scope ? { working_scope: wipScope } : {}),
           })
@@ -454,7 +504,9 @@ export const codingAgentJob = task({
           }
         }
 
-        await closeSandbox(session, true)
+        if (!agentResult.hardInterrupted) {
+          await closeSandbox(session, true)
+        }
         return
       }
 

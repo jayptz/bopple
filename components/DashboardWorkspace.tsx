@@ -55,6 +55,7 @@ export function DashboardWorkspace() {
   const [feedback, setFeedback] = useState('')
   const [sending, setSending] = useState(false)
   const [resolving, setResolving] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mobilePane, setMobilePane] = useState<'sidebar' | 'chat' | 'code'>('chat')
@@ -255,9 +256,27 @@ export function DashboardWorkspace() {
     }
   }
 
+  async function stopTask() {
+    if (!selectedTask) return
+    setStopping(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/tasks/${selectedTask.id}/stop`, { method: 'POST' })
+      const data = (await res.json()) as { task?: Task; error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed to stop')
+      if (data.task) updateTask(data.task)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop')
+    } finally {
+      setStopping(false)
+    }
+  }
+
   const canFeedback =
     selectedTask?.status === 'awaiting_feedback' ||
     (selectedTask?.status === 'running' && Boolean(selectedTask.pr_url))
+
+  const canStop = selectedTask?.status === 'running'
 
   const showResolve =
     selectedTask != null &&
@@ -492,6 +511,16 @@ export function DashboardWorkspace() {
                     >
                       Open PR →
                     </a>
+                  )}
+                  {canStop && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={stopTask}
+                      disabled={stopping || Boolean(selectedTask.interrupt_requested_at)}
+                    >
+                      {stopping || selectedTask.interrupt_requested_at ? 'Stopping...' : 'Stop'}
+                    </Button>
                   )}
                   {showResolve && (
                     <Button size="sm" variant="secondary" onClick={resolveTask} disabled={resolving}>

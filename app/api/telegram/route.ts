@@ -15,6 +15,7 @@ import {
   resolveRepoFromMessage,
   type ConnectedRepo,
 } from '@/lib/telegram-routing'
+import { isStopCommand } from '@/lib/interrupt'
 import type { FeedbackEntry } from '@/types'
 
 interface TelegramUpdate {
@@ -218,7 +219,7 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSend *stop* while a task is running to pause after the current step.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
       )
       return NextResponse.json({ ok: true })
     }
@@ -298,6 +299,38 @@ export async function POST(req: NextRequest) {
     const taskText = forceNew
       ? text.slice(5).trim()
       : text || (hasPhoto ? DEFAULT_PHOTO_PROMPT : '')
+
+    // Soft interrupt: "stop" / "/stop" on the most recent running/queued task.
+    if (!forceNew && !hasPhoto && isStopCommand(text)) {
+      const { data: runningTask } = await supabase
+        .from('tasks')
+        .select(TASK_SELECT)
+        .eq('user_id', user.id)
+        .in('status', ['running', 'queued'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!runningTask) {
+        await sendMessage(chatId, 'Nothing is running right now.')
+        return NextResponse.json({ ok: true })
+      }
+
+      const now = new Date().toISOString()
+      await supabase
+        .from('tasks')
+        .update({ interrupt_requested_at: now })
+        .eq('id', runningTask.id)
+
+      console.log(
+        `[interrupt] requested via telegram task=${runningTask.id} at=${now} repo=${runningTask.repo_full_name}`
+      )
+      await sendMessage(
+        chatId,
+        'Stop requested — finishing the current step, then pausing. I\'ll confirm which tool I stopped after.'
+      )
+      return NextResponse.json({ ok: true })
+    }
 
     if (!taskText && !forceNew) {
       await sendMessage(chatId, 'Tell me what you want changed — e.g. /new add a dark mode toggle')
