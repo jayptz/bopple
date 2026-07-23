@@ -81,6 +81,8 @@ export interface Task {
   agent_logs: AgentLogEntry[] | null
   feedback_history: FeedbackEntry[] | null
   telegram_message_ids: number[] | null
+  /** When set, the agent loop soft-stops after the current tool call. */
+  interrupt_requested_at: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null

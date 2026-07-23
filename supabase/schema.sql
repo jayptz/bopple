@@ -81,6 +81,7 @@ create table if not exists public.tasks (
   agent_logs jsonb default '[]'::jsonb,
   feedback_history jsonb default '[]'::jsonb,
   telegram_message_ids jsonb default '[]'::jsonb,
+  interrupt_requested_at timestamptz,
   created_at timestamptz default now(),
   started_at timestamptz,
   completed_at timestamptz
