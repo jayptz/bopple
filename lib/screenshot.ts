@@ -4,6 +4,14 @@ const NAV_TIMEOUT_MS = 45_000
 const SETTLE_MS = 2_000
 const SCREENSHOT_BUCKET = 'screenshots'
 
+/**
+ * Public E2B host can lag behind localhost-ready inside the sandbox.
+ * 60s covers typical tunnel + first compile without blocking the job forever;
+ * on timeout we skip the screenshot rather than send a broken 404 frame.
+ */
+export const PREVIEW_READY_TIMEOUT_MS = 60_000
+const PREVIEW_READY_POLL_MS = 2_000
+
 function toAbsoluteUrl(previewUrl: string, route: string): string {
   // E2B's getHost() returns a bare host (no scheme) — normalize to https.
   const base = previewUrl.startsWith('http') ? previewUrl : `https://${previewUrl}`
@@ -15,6 +23,73 @@ export interface CaptureResult {
   buffer: Buffer | null
   error: string | null
   url: string
+}
+
+export interface PreviewReadyResult {
+  ready: boolean
+  waitedMs: number
+  lastStatus: number | null
+  url: string
+}
+
+function isPreviewEdgeNotReady(status: number | null): boolean {
+  // Connection failures → null. 502/503/504 = tunnel/proxy not ready yet.
+  // Plain 404 from a live Next app means the host is up (wrong route ≠ not ready).
+  if (status == null) return true
+  return status === 502 || status === 503 || status === 504
+}
+
+/**
+ * Poll the *public* preview URL until the edge responds.
+ * `waitForLocalPort` only proves the process is up inside the sandbox —
+ * E2B's getHost() tunnel often needs a few more seconds before outsiders
+ * stop seeing connection errors / gateway 404s.
+ */
+export async function waitForPreviewReady(
+  previewUrl: string,
+  route: string,
+  options?: { timeoutMs?: number; pollMs?: number }
+): Promise<PreviewReadyResult> {
+  const timeoutMs = options?.timeoutMs ?? PREVIEW_READY_TIMEOUT_MS
+  const pollMs = options?.pollMs ?? PREVIEW_READY_POLL_MS
+  const url = toAbsoluteUrl(previewUrl, route)
+  const started = Date.now()
+  let lastStatus: number | null = null
+
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 8_000)
+      try {
+        const res = await fetch(url, {
+          method: 'GET',
+          redirect: 'follow',
+          signal: controller.signal,
+          headers: { Accept: 'text/html,application/xhtml+xml,*/*' },
+        })
+        lastStatus = res.status
+        if (!isPreviewEdgeNotReady(res.status)) {
+          const waitedMs = Date.now() - started
+          return { ready: true, waitedMs, lastStatus, url }
+        }
+      } finally {
+        clearTimeout(timer)
+      }
+    } catch {
+      lastStatus = null
+    }
+
+    const remaining = timeoutMs - (Date.now() - started)
+    if (remaining <= 0) break
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)))
+  }
+
+  return {
+    ready: false,
+    waitedMs: Date.now() - started,
+    lastStatus,
+    url,
+  }
 }
 
 /**

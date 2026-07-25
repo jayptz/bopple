@@ -596,33 +596,70 @@ export const codingAgentJob = task({
           await appendAgentLog(supabase, taskId, 'thinking', screenshotError.slice(0, 200))
         } else {
           try {
+            const {
+              captureScreenshot,
+              uploadScreenshot,
+              waitForPreviewReady,
+              PREVIEW_READY_TIMEOUT_MS,
+            } = await import('../lib/screenshot')
+
+            // Localhost-ready ≠ public E2B host ready — poll the public URL first.
             await appendAgentLog(
               supabase,
               taskId,
               'running',
-              `Capturing screenshot of ${screenshotRoute}...`
+              `Waiting for public preview (up to ${Math.round(PREVIEW_READY_TIMEOUT_MS / 1000)}s)...`
             )
-            const { captureScreenshot, uploadScreenshot } = await import('../lib/screenshot')
-            const captured = await captureScreenshot(demo.demoUrl, screenshotRoute)
-            if (!captured.buffer) {
-              screenshotError = captured.error ?? `Failed to capture ${captured.url}`
-            } else {
-              const uploaded = await uploadScreenshot(supabase, taskId, captured.buffer)
-              if (!uploaded.url) {
-                screenshotError =
-                  uploaded.error ??
-                  'Upload failed — is the Supabase "screenshots" bucket created?'
-              } else {
-                screenshotUrl = uploaded.url
-              }
-            }
-            if (screenshotError) {
+            const previewReady = await waitForPreviewReady(demo.demoUrl, screenshotRoute)
+            await appendAgentLog(
+              supabase,
+              taskId,
+              'running',
+              previewReady.ready
+                ? `Public preview ready after ${previewReady.waitedMs}ms (HTTP ${previewReady.lastStatus})`
+                : `Public preview not ready after ${previewReady.waitedMs}ms (last HTTP ${previewReady.lastStatus ?? 'none'}) — skipping screenshot`
+            )
+            console.log(
+              `[screenshot] preview_poll ready=${previewReady.ready} waitedMs=${previewReady.waitedMs} lastStatus=${previewReady.lastStatus} url=${previewReady.url}`
+            )
+
+            if (!previewReady.ready) {
+              screenshotError =
+                `Preview URL was not reachable within ${Math.round(PREVIEW_READY_TIMEOUT_MS / 1000)}s — PR link sent without screenshot.`
               await appendAgentLog(
                 supabase,
                 taskId,
                 'thinking',
-                `Screenshot failed: ${screenshotError.slice(0, 180)}`
+                screenshotError.slice(0, 200)
               )
+            } else {
+              await appendAgentLog(
+                supabase,
+                taskId,
+                'running',
+                `Capturing screenshot of ${screenshotRoute}...`
+              )
+              const captured = await captureScreenshot(demo.demoUrl, screenshotRoute)
+              if (!captured.buffer) {
+                screenshotError = captured.error ?? `Failed to capture ${captured.url}`
+              } else {
+                const uploaded = await uploadScreenshot(supabase, taskId, captured.buffer)
+                if (!uploaded.url) {
+                  screenshotError =
+                    uploaded.error ??
+                    'Upload failed — is the Supabase "screenshots" bucket created?'
+                } else {
+                  screenshotUrl = uploaded.url
+                }
+              }
+              if (screenshotError) {
+                await appendAgentLog(
+                  supabase,
+                  taskId,
+                  'thinking',
+                  `Screenshot failed: ${screenshotError.slice(0, 180)}`
+                )
+              }
             }
           } catch (error) {
             screenshotError =

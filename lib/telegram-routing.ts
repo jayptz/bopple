@@ -9,7 +9,11 @@ export type ConnectedRepo = {
   name: string
 }
 
-/** Words that often follow on/in/for but are not repo names. */
+/**
+ * Words that often follow on/in/for but are not repo names.
+ * Also excluded from whole-word short-name matching so common English
+ * ("for now", "on the …") never collides with a short repo name.
+ */
 const REPO_HINT_STOPWORDS = new Set([
   'the',
   'a',
@@ -25,6 +29,13 @@ const REPO_HINT_STOPWORDS = new Set([
   'it',
   'me',
   'us',
+  'now',
+  'once',
+  'just',
+  'later',
+  'today',
+  'tomorrow',
+  'please',
   'code',
   'codebase',
   'repo',
@@ -50,6 +61,15 @@ const REPO_HINT_STOPWORDS = new Set([
   'dashboard',
   'settings',
 ])
+
+/** Determiners skipped between on/in/for and the name ("on my Yaj.AI repo"). */
+const REPO_HINT_DETERMINERS = new Set(['my', 'the', 'our', 'a', 'an', 'your', 'their'])
+
+/**
+ * Short names shorter than this are only matched via full owner/name,
+ * never as bare whole words (too many English collisions).
+ */
+const MIN_SHORT_NAME_MATCH_LEN = 3
 
 export const ACTIVE_TASK_STATUSES = ['queued', 'running', 'awaiting_feedback'] as const
 
@@ -88,9 +108,42 @@ export function shortRepoName(fullName: string): string {
   return (parts[parts.length - 1] ?? fullName).toLowerCase()
 }
 
+/** Normalize for fuzzy compare: "Yaj.AI" / "yaj-ai" / "YajAI" → "yajai". */
+export function normalizeRepoToken(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Whole-token match. Dots/hyphens in the name are literal; surrounding
+ * punctuation (including other dots) counts as a boundary so "yaj.ai"
+ * matches inside "On my Yaj.AI repo".
+ */
+function tokenMatchesMessage(token: string, messageLower: string): boolean {
+  if (!token) return false
+  const escaped = escapeRegExp(token)
+  const wholeWord = new RegExp(`(?:^|[^a-z0-9_])${escaped}(?:[^a-z0-9_]|$)`, 'i')
+  if (wholeWord.test(messageLower)) return true
+
+  // Only for dotted/hyphenated names (e.g. Yaj.AI): also match punctuation-stripped
+  // form as a whole token so "YajAI" / "yaj ai" still resolve.
+  if (!/[.\-_]/.test(token)) return false
+  const compact = normalizeRepoToken(token)
+  if (compact.length < MIN_SHORT_NAME_MATCH_LEN) return false
+  if (REPO_HINT_STOPWORDS.has(token) || REPO_HINT_STOPWORDS.has(compact)) return false
+
+  const softened = messageLower.replace(/[^a-z0-9]+/g, ' ')
+  const compactWhole = new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(compact)}(?:[^a-z0-9]|$)`, 'i')
+  return compactWhole.test(softened)
+}
+
 /**
  * Resolve which connected repo a natural-language Telegram message refers to.
  * Matches short names (e.g. "bopple" from "jayptz/bopple") as whole words.
+ * Names with periods (e.g. "Yaj.AI") are preserved and also matched without punctuation.
  */
 export function resolveRepoFromMessage(
   message: string,
@@ -112,17 +165,22 @@ export function resolveRepoFromMessage(
     const short = shortRepoName(repo.full_name)
     if (!short) continue
 
-    // Whole-word / boundary-ish match; allow hyphens/underscores/dots in the name.
-    const escaped = short.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const wholeWord = new RegExp(`(?:^|[^a-z0-9_])${escaped}(?:[^a-z0-9_]|$)`, 'i')
-    const fullEscaped = repo.full_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const fullName = new RegExp(`(?:^|[^a-z0-9_])${fullEscaped}(?:[^a-z0-9_]|$)`, 'i')
+    // Skip stopword / tiny short names for bare whole-word match (still allow full owner/repo).
+    const shortAllowed =
+      short.length >= MIN_SHORT_NAME_MATCH_LEN && !REPO_HINT_STOPWORDS.has(short)
 
-    if (wholeWord.test(lower) || fullName.test(lower)) {
-      if (!seenIds.has(repo.id)) {
-        seenIds.add(repo.id)
-        matched.push(repo)
-      }
+    const nameField = (repo.name || '').toLowerCase()
+    const nameAllowed =
+      nameField.length >= MIN_SHORT_NAME_MATCH_LEN && !REPO_HINT_STOPWORDS.has(nameField)
+
+    const hit =
+      (shortAllowed && tokenMatchesMessage(short, lower)) ||
+      (nameAllowed && nameField !== short && tokenMatchesMessage(nameField, lower)) ||
+      tokenMatchesMessage(repo.full_name.toLowerCase(), lower)
+
+    if (hit && !seenIds.has(repo.id)) {
+      seenIds.add(repo.id)
+      matched.push(repo)
     }
   }
 
@@ -130,19 +188,26 @@ export function resolveRepoFromMessage(
   if (matched.length > 1) return { status: 'ambiguous', repos: matched }
 
   // No connected repo found — check explicit "on/in/for <name>" hints for typos.
-  const hintRe = /\b(?:on|in|for)\s+([a-z0-9][a-z0-9._-]*)\b/gi
+  // Allow an optional determiner so "on my Yaj.AI repo" yields "yaj.ai", not "my".
+  const hintRe =
+    /\b(?:on|in|for)\s+(?:(?:my|the|our|a|an|your|their)\s+)?([a-z0-9][a-z0-9._-]*)\b/gi
   const hints: string[] = []
   let hintMatch: RegExpExecArray | null
   while ((hintMatch = hintRe.exec(lower)) !== null) {
     const name = hintMatch[1]
-    if (!REPO_HINT_STOPWORDS.has(name)) hints.push(name)
+    if (REPO_HINT_STOPWORDS.has(name) || REPO_HINT_DETERMINERS.has(name)) continue
+    hints.push(name)
   }
 
   const connectedShort = new Set(connected.map((r) => shortRepoName(r.full_name)))
+  const connectedCompact = new Set(
+    connected.map((r) => normalizeRepoToken(shortRepoName(r.full_name)))
+  )
+
   for (const hint of hints) {
-    if (!connectedShort.has(hint)) {
-      return { status: 'unknown', name: hint }
-    }
+    if (connectedShort.has(hint)) continue
+    if (connectedCompact.has(normalizeRepoToken(hint))) continue
+    return { status: 'unknown', name: hint }
   }
 
   return { status: 'default' }
@@ -151,19 +216,24 @@ export function resolveRepoFromMessage(
 /**
  * Decide feedback-on-existing-task vs create-new-task.
  *
- * Repo mentioned + matches active task on that repo → feedback.
- * Repo mentioned + no active task on that repo (or mismatch) → new task.
- * No repo mentioned → feedback on the open/global continuable task if any.
+ * Default: every message creates a NEW task.
+ * Continue an existing task only with an explicit signal:
+ *   - Telegram reply-to on that task's Done/update message, or
+ *   - `/reply` (targets reply-to if present, else most recent active task).
+ * Repo matching only picks which repo a NEW task targets — never feedback-vs-new.
  */
 export function decideTelegramRoute(params: {
   forceNew: boolean
+  /** True when the user sent /reply (with or without trailing text). */
+  explicitReply: boolean
   resolved: RepoResolveResult
-  /** Most recent active task for the matched repo (only when resolved.status === 'matched'). */
-  activeTaskForMatchedRepo: ContinuableTaskRef | null
-  /** Continuable task when no repo was named (reply / awaiting_feedback fallback). */
-  openTaskNoRepo: ContinuableTaskRef | null
+  /**
+   * Task to continue when the user replied to a bot message and/or sent /reply.
+   * Null when neither signal is present — always new_task in that case.
+   */
+  continuationTask: ContinuableTaskRef | null
 }): TelegramRouteDecision {
-  const { forceNew, resolved, activeTaskForMatchedRepo, openTaskNoRepo } = params
+  const { forceNew, explicitReply, resolved, continuationTask } = params
 
   if (forceNew) {
     if (resolved.status === 'ambiguous') {
@@ -188,6 +258,19 @@ export function decideTelegramRoute(params: {
     }
   }
 
+  // continuationTask is only set by the webhook when reply-to or /reply was present.
+  if (continuationTask) {
+    return {
+      action: 'feedback',
+      taskId: continuationTask.id,
+      reason: explicitReply
+        ? 'explicit_reply_command'
+        : 'telegram_reply_to_task_message',
+      detectedRepo: resolved.status === 'matched' ? resolved.repo.full_name : null,
+      taskRepo: continuationTask.repo_full_name,
+    }
+  }
+
   if (resolved.status === 'ambiguous') {
     return {
       action: 'ask_ambiguous',
@@ -204,44 +287,19 @@ export function decideTelegramRoute(params: {
     }
   }
 
+  // No reply-to / /reply → always a new task. Repo only selects the target.
   if (resolved.status === 'matched') {
-    const detected = resolved.repo.full_name
-    if (
-      activeTaskForMatchedRepo &&
-      activeTaskForMatchedRepo.repo_full_name === detected
-    ) {
-      return {
-        action: 'feedback',
-        taskId: activeTaskForMatchedRepo.id,
-        reason: 'repo_matches_active_task',
-        detectedRepo: detected,
-        taskRepo: activeTaskForMatchedRepo.repo_full_name,
-      }
-    }
     return {
       action: 'new_task',
-      reason: activeTaskForMatchedRepo
-        ? 'repo_mismatch_create_new'
-        : 'repo_mentioned_no_active_task_on_repo',
-      detectedRepo: detected,
+      reason: 'new_task_with_matched_repo',
+      detectedRepo: resolved.repo.full_name,
       repo: resolved.repo,
-    }
-  }
-
-  // No repo detected — keep prior behavior: continue open task if any.
-  if (openTaskNoRepo) {
-    return {
-      action: 'feedback',
-      taskId: openTaskNoRepo.id,
-      reason: 'no_repo_in_message_continue_open_task',
-      detectedRepo: null,
-      taskRepo: openTaskNoRepo.repo_full_name,
     }
   }
 
   return {
     action: 'new_task',
-    reason: 'no_repo_in_message_no_open_task',
+    reason: 'new_task_default_repo',
     detectedRepo: null,
     repo: null,
   }

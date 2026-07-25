@@ -224,13 +224,14 @@ export function formatTaskStatusMessage(task: TaskTelegramSnapshot): string {
         if (task.demo_url) {
           text += `\n[Live Preview](${task.demo_url})`
         }
-        text += "\n\n_Reply here with feedback and I'll keep going on the same branch._"
+        text +=
+          "\n\n_Reply to this message (or /reply) to continue this task._"
         return text
       }
       const question =
         task.feedback_question?.trim() ||
         'I need a bit more info to continue. Reply in this chat.'
-      return `${question}\n\n_Just reply here — I'll pick it up on the same task._`
+      return `${question}\n\n_Reply to this message (or /reply) to continue this task._`
     }
     case 'done':
       return 'All set — marked this one resolved.'

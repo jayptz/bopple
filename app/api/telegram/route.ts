@@ -69,17 +69,15 @@ async function appendTelegramMessageIds(
   })
 }
 
-/** Most recent active task for a specific repo (not global). */
-async function findActiveTaskForRepo(
+/** Most recent active task for this user (queued / running / awaiting_feedback). */
+async function findMostRecentActiveTask(
   supabase: ReturnType<typeof createServiceClient>,
-  userId: string,
-  repoFullName: string
+  userId: string
 ): Promise<ContinuableTask | null> {
   const { data } = await supabase
     .from('tasks')
     .select(TASK_SELECT)
     .eq('user_id', userId)
-    .eq('repo_full_name', repoFullName)
     .in('status', [...ACTIVE_TASK_STATUSES])
     .order('created_at', { ascending: false })
     .limit(1)
@@ -89,15 +87,23 @@ async function findActiveTaskForRepo(
 }
 
 /**
- * When no repo is named: continue via explicit reply, or the latest
- * awaiting_feedback task (prior behavior).
+ * Resolve which task to continue for an explicit continuation signal.
+ *
+ * Priority:
+ * 1) Telegram reply-to message_id → task that owns that bot message
+ * 2) `/reply` with no reply-to (or unmatched reply-to) → most recent active task
+ *
+ * Assumption for (2): "most recent active" = latest created_at among
+ * queued | running | awaiting_feedback. Documented in decideTelegramRoute.
  */
-async function findTaskForReply(
+async function findContinuationTask(
   supabase: ReturnType<typeof createServiceClient>,
   userId: string,
-  replyToMessageId: number | undefined
+  replyToMessageId: number | undefined,
+  explicitReply: boolean
 ): Promise<ContinuableTask | null> {
-  // 1) Exact match: user replied to a message we linked to a task
+  if (replyToMessageId == null && !explicitReply) return null
+
   if (replyToMessageId != null) {
     const { data: byReply } = await supabase
       .from('tasks')
@@ -111,32 +117,12 @@ async function findTaskForReply(
     if (byReply) return byReply as ContinuableTask
   }
 
-  // 2) Any task waiting for input — plain replies continue it too.
-  const { data: awaiting } = await supabase
-    .from('tasks')
-    .select(TASK_SELECT)
-    .eq('user_id', userId)
-    .eq('status', 'awaiting_feedback')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (awaiting) return awaiting as ContinuableTask
-
-  // 3) Explicit Telegram reply but no ID match yet — continue most recent unfinished.
-  if (replyToMessageId != null) {
-    const { data: recent } = await supabase
-      .from('tasks')
-      .select(TASK_SELECT)
-      .eq('user_id', userId)
-      .in('status', ['awaiting_feedback', 'failed', 'done'])
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (recent) return recent as ContinuableTask
+  // /reply without a matched reply-to → most recent active task.
+  if (explicitReply) {
+    return findMostRecentActiveTask(supabase, userId)
   }
 
+  // Bare reply-to that didn't match any stored message id — do not guess.
   return null
 }
 
@@ -219,7 +205,7 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nTo tweak a PR, *reply* to my message (or just send feedback while a task needs input) — I'll keep going on the same branch.\n\nSend *stop* while a task is running to pause after the current step.\n\nSay /new before a message if you want to start a brand new task instead.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nEvery message starts a *new* task. To continue an existing one, *reply* to my Done/update message, or send `/reply …` (continues your most recent active task).\n\nSend *stop* while a task is running to pause after the current step.\n\nSay /new before a message if you want to force a brand new task.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
       )
       return NextResponse.json({ ok: true })
     }
@@ -295,13 +281,17 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const forceNew = text.toLowerCase().startsWith('/new ')
+    const textLower = text.toLowerCase()
+    const forceNew = textLower.startsWith('/new ')
+    const explicitReply = textLower === '/reply' || textLower.startsWith('/reply ')
     const taskText = forceNew
       ? text.slice(5).trim()
-      : text || (hasPhoto ? DEFAULT_PHOTO_PROMPT : '')
+      : explicitReply
+        ? text.slice('/reply'.length).trim()
+        : text || (hasPhoto ? DEFAULT_PHOTO_PROMPT : '')
 
     // Soft interrupt: "stop" / "/stop" on the most recent running/queued task.
-    if (!forceNew && !hasPhoto && isStopCommand(text)) {
+    if (!forceNew && !explicitReply && !hasPhoto && isStopCommand(text)) {
       const { data: runningTask } = await supabase
         .from('tasks')
         .select(TASK_SELECT)
@@ -332,8 +322,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    if (!taskText && !forceNew) {
+    if (!taskText && !forceNew && !explicitReply) {
       await sendMessage(chatId, 'Tell me what you want changed — e.g. /new add a dark mode toggle')
+      return NextResponse.json({ ok: true })
+    }
+
+    if (explicitReply && !taskText && !hasPhoto) {
+      await sendMessage(
+        chatId,
+        'What should I change? Example: `/reply make the footer smaller` (or reply to my Done message).'
+      )
       return NextResponse.json({ ok: true })
     }
 
@@ -354,27 +352,49 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    const resolved = resolveRepoFromMessage(taskText || '', repos)
+    console.log(
+      `[telegram] connected_repos=${repos.map((r) => `${r.full_name}[short=${r.name}]`).join(', ')}`
+    )
 
-    let activeTaskForMatchedRepo: ContinuableTask | null = null
+    const resolved = resolveRepoFromMessage(taskText || '', repos)
     if (resolved.status === 'matched') {
-      activeTaskForMatchedRepo = await findActiveTaskForRepo(
-        supabase,
-        user.id,
-        resolved.repo.full_name
+      console.log(`[telegram] repo_resolve matched=${resolved.repo.full_name}`)
+    } else if (resolved.status === 'ambiguous') {
+      console.log(
+        `[telegram] repo_resolve ambiguous=${resolved.repos.map((r) => r.full_name).join(',')}`
       )
+    } else if (resolved.status === 'unknown') {
+      console.log(`[telegram] repo_resolve unknown=${resolved.name}`)
+    } else {
+      console.log('[telegram] repo_resolve default')
     }
 
-    const openTaskNoRepo =
-      resolved.status === 'default' && !forceNew
-        ? await findTaskForReply(supabase, user.id, replyToMessageId)
+    const continuationTask =
+      !forceNew && (explicitReply || replyToMessageId != null)
+        ? await findContinuationTask(supabase, user.id, replyToMessageId, explicitReply)
         : null
+
+    if (explicitReply && !continuationTask) {
+      await sendMessage(
+        chatId,
+        'No active task to continue. Send a new request (or reply to a Done message).'
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    if (replyToMessageId != null && !explicitReply && !continuationTask) {
+      await sendMessage(
+        chatId,
+        "I couldn't match that reply to a task. Reply to my Done/update message, or use `/reply …`."
+      )
+      return NextResponse.json({ ok: true })
+    }
 
     const decision = decideTelegramRoute({
       forceNew,
+      explicitReply,
       resolved,
-      activeTaskForMatchedRepo,
-      openTaskNoRepo,
+      continuationTask,
     })
 
     console.log(formatRouteLog(decision))
@@ -395,10 +415,7 @@ export async function POST(req: NextRequest) {
 
     if (decision.action === 'feedback') {
       const openTask =
-        (activeTaskForMatchedRepo && activeTaskForMatchedRepo.id === decision.taskId
-          ? activeTaskForMatchedRepo
-          : null) ??
-        (openTaskNoRepo && openTaskNoRepo.id === decision.taskId ? openTaskNoRepo : null)
+        continuationTask && continuationTask.id === decision.taskId ? continuationTask : null
 
       if (!openTask) {
         // Shouldn't happen — re-fetch by id as a safety net.

@@ -1,11 +1,13 @@
 /**
- * Simulated Telegram message sequence for repo-aware feedback routing.
+ * Simulated Telegram message sequence for explicit-continuation routing + repo parsing.
  * Run: npx tsx scripts/test-telegram-routing.ts
  */
 import {
   decideTelegramRoute,
   formatRouteLog,
+  normalizeRepoToken,
   resolveRepoFromMessage,
+  shortRepoName,
   type ConnectedRepo,
   type ContinuableTaskRef,
 } from '../lib/telegram-routing'
@@ -13,6 +15,7 @@ import {
 const repos: ConnectedRepo[] = [
   { id: 'id-a', full_name: 'jayptz/repo-a', name: 'repo-a' },
   { id: 'id-b', full_name: 'jayptz/repo-b', name: 'repo-b' },
+  { id: 'id-yaj', full_name: 'jayptz/Yaj.AI', name: 'Yaj.AI' },
 ]
 
 const taskARunning: ContinuableTaskRef = {
@@ -38,103 +41,144 @@ function assert(name: string, cond: boolean, detail?: string) {
   }
 }
 
-function simulate(message: string, activeByRepo: Record<string, ContinuableTaskRef | null>) {
+function simulate(
+  message: string,
+  opts: {
+    forceNew?: boolean
+    explicitReply?: boolean
+    continuationTask?: ContinuableTaskRef | null
+  } = {}
+) {
   const resolved = resolveRepoFromMessage(message, repos)
-  const activeTaskForMatchedRepo =
-    resolved.status === 'matched'
-      ? activeByRepo[resolved.repo.full_name] ?? null
-      : null
-  const openTaskNoRepo =
-    resolved.status === 'default' ? activeByRepo['__open__'] ?? null : null
-
   const decision = decideTelegramRoute({
-    forceNew: false,
+    forceNew: opts.forceNew ?? false,
+    explicitReply: opts.explicitReply ?? false,
     resolved,
-    activeTaskForMatchedRepo,
-    openTaskNoRepo,
+    continuationTask: opts.continuationTask ?? null,
   })
 
   console.log(`  msg: ${JSON.stringify(message)}`)
   console.log(`  ${formatRouteLog(decision)}`)
-  return decision
+  return { resolved, decision }
 }
 
-console.log('\n--- Sequence 1: task on A running, then message naming B ---\n')
+console.log('\n--- FIX 2: plain message while A running → always new_task ---\n')
 {
-  const d1 = simulate('on repo-a add a navbar', {
-    'jayptz/repo-a': null,
-    'jayptz/repo-b': null,
-  })
-  assert('1a new task on A', d1.action === 'new_task' && d1.repo?.full_name === 'jayptz/repo-a')
-
-  // A is now running; user messages about B before A finishes
-  const d2 = simulate('on repo-b fix the timeout', {
-    'jayptz/repo-a': taskARunning,
-    'jayptz/repo-b': null,
+  const { decision } = simulate('add a dark mode toggle', {
+    continuationTask: null,
   })
   assert(
-    '1b MUST create new task on B (not feedback on A)',
-    d2.action === 'new_task' && d2.repo?.full_name === 'jayptz/repo-b',
-    d2.action === 'feedback' ? `incorrectly feedback to ${d2.taskId}` : undefined
-  )
-  assert(
-    '1b must not touch task-a',
-    !(d2.action === 'feedback' && d2.taskId === 'task-a')
+    'plain message is new_task even if A is running elsewhere',
+    decision.action === 'new_task' && decision.reason === 'new_task_default_repo'
   )
 }
 
-console.log('\n--- Sequence 2: task on A awaiting, follow-up with no repo ---\n')
+console.log('\n--- FIX 2: same-repo mention while A awaiting → still new_task ---\n')
 {
-  const d = simulate('also add a footer', {
-    'jayptz/repo-a': taskAAwaiting,
-    'jayptz/repo-b': null,
-    __open__: taskAAwaiting,
+  const { decision } = simulate('on repo-a make the footer smaller', {
+    continuationTask: null,
   })
   assert(
-    '2 feedback on A when no repo mentioned',
-    d.action === 'feedback' && d.taskId === 'task-a' && d.reason === 'no_repo_in_message_continue_open_task'
+    'repo match does NOT auto-feedback',
+    decision.action === 'new_task' &&
+      decision.repo?.full_name === 'jayptz/repo-a' &&
+      decision.reason === 'new_task_with_matched_repo',
+    decision.action === 'feedback' ? `incorrectly feedback to ${decision.taskId}` : undefined
   )
 }
 
-console.log('\n--- Sequence 3: task on A awaiting, message naming A again ---\n')
+console.log('\n--- FIX 2: reply-to Done message → feedback on A ---\n')
 {
-  const d = simulate('on repo-a make the footer smaller', {
-    'jayptz/repo-a': taskAAwaiting,
-    'jayptz/repo-b': null,
+  const { decision } = simulate('make the footer smaller', {
+    continuationTask: taskAAwaiting,
+    explicitReply: false,
   })
   assert(
-    '3 feedback on A when same repo mentioned',
-    d.action === 'feedback' && d.taskId === 'task-a' && d.reason === 'repo_matches_active_task'
+    'telegram reply-to continues A',
+    decision.action === 'feedback' &&
+      decision.taskId === 'task-a' &&
+      decision.reason === 'telegram_reply_to_task_message'
   )
 }
 
-console.log('\n--- Sequence 4: A running + B awaiting; message for A ---\n')
+console.log('\n--- FIX 2: /reply without reply-to → most recent active ---\n')
 {
-  const taskB: ContinuableTaskRef = {
-    id: 'task-b',
-    repo_full_name: 'jayptz/repo-b',
-    status: 'awaiting_feedback',
-  }
-  const d = simulate('on repo-a also tweak the title', {
-    'jayptz/repo-a': taskARunning,
-    'jayptz/repo-b': taskB,
-    __open__: taskB, // globally most recent would be B — must NOT use that
+  // Assumption: webhook passes most recent active as continuationTask for /reply.
+  const { decision } = simulate('make the footer smaller', {
+    explicitReply: true,
+    continuationTask: taskARunning,
   })
   assert(
-    '4 match per-repo not global (feedback to A, not B)',
-    d.action === 'feedback' && d.taskId === 'task-a',
-    d.action === 'feedback' ? `got task ${d.taskId}` : `got ${d.action}`
+    '/reply continues most recent active (A)',
+    decision.action === 'feedback' &&
+      decision.taskId === 'task-a' &&
+      decision.reason === 'explicit_reply_command'
   )
 }
 
-console.log('\n--- Sequence 5: no repo, no open task → new ---\n')
+console.log('\n--- FIX 2: naming B while A running → new on B ---\n')
 {
-  const d = simulate('add dark mode', {
-    'jayptz/repo-a': null,
-    'jayptz/repo-b': null,
-    __open__: null,
+  const { decision } = simulate('on repo-b fix the timeout', {
+    continuationTask: null,
   })
-  assert('5 new task with default repo', d.action === 'new_task' && d.repo === null)
+  assert(
+    'cross-repo message creates new task on B',
+    decision.action === 'new_task' && decision.repo?.full_name === 'jayptz/repo-b'
+  )
+}
+
+console.log('\n--- FIX 3: Yaj.AI message must not match "now" ---\n')
+{
+  const msg =
+    'On my Yaj.AI repo, add a Recent Activity section to the dashboard showing the last 5 workflow runs, keep it simple with mock data for now, send me a screenshot.'
+
+  console.log(
+    '  connected:',
+    repos.map((r) => `${r.full_name} short=${shortRepoName(r.full_name)} norm=${normalizeRepoToken(shortRepoName(r.full_name))}`).join(' | ')
+  )
+
+  const { resolved, decision } = simulate(msg, { continuationTask: null })
+
+  assert(
+    'Yaj.AI matched (not unknown/default)',
+    resolved.status === 'matched' && resolved.repo.full_name === 'jayptz/Yaj.AI',
+    resolved.status === 'unknown'
+      ? `unknown name=${resolved.name}`
+      : resolved.status === 'matched'
+        ? `matched ${resolved.repo.full_name}`
+        : resolved.status
+  )
+  assert(
+    'does not report unknown repo "now"',
+    !(resolved.status === 'unknown' && resolved.name === 'now')
+  )
+  assert(
+    'new task targets Yaj.AI',
+    decision.action === 'new_task' && decision.repo?.full_name === 'jayptz/Yaj.AI'
+  )
+}
+
+console.log('\n--- FIX 3: "for now" alone must not be unknown ---\n')
+{
+  const resolved = resolveRepoFromMessage(
+    'keep it simple with mock data for now',
+    repos
+  )
+  assert(
+    '"for now" → default (stopword), not unknown now',
+    resolved.status === 'default',
+    resolved.status === 'unknown' ? `got unknown ${resolved.name}` : resolved.status
+  )
+}
+
+console.log('\n--- FIX 3: YajAI without period still matches ---\n')
+{
+  const resolved = resolveRepoFromMessage('on YajAI add a navbar', repos)
+  assert(
+    'punctuation-stripped YajAI matches Yaj.AI',
+    resolved.status === 'matched' && resolved.repo.full_name === 'jayptz/Yaj.AI',
+    resolved.status === 'matched' ? resolved.repo.full_name : resolved.status
+  )
 }
 
 console.log(`\n${failed === 0 ? 'All routing tests passed.' : `${failed} test(s) failed.`}\n`)
