@@ -1,3 +1,5 @@
+import { absolutePreviewUrl } from '@/lib/preview-url'
+
 const TELEGRAM_API_BASE = 'https://api.telegram.org'
 
 interface TelegramApiResponse {
@@ -222,7 +224,7 @@ export function formatTaskStatusMessage(task: TaskTelegramSnapshot): string {
         }
         text += `\n\n[Review PR](${task.pr_url})`
         if (task.demo_url) {
-          text += `\n[Live Preview](${task.demo_url})`
+          text += `\n[Live Preview](${absolutePreviewUrl(task.demo_url)})`
         }
         text +=
           "\n\n_Reply to this message (or /reply) to continue this task._"

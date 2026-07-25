@@ -1038,7 +1038,10 @@ export async function tryGenerateDemo(
 
     const ready = await waitForLocalPort(session, port, logs)
     if (ready) {
-      const demoUrl = session.sandbox.getHost(port)
+      // Persist an absolute URL — bare hosts break <a href> in the dashboard
+      // (relative to the app origin) while Telegram clients often auto-https.
+      const host = session.sandbox.getHost(port)
+      const demoUrl = host.startsWith('http') ? host : `https://${host}`
       logs.push(`Preview: ${demoUrl}`)
       return { demoUrl, demoLogs: logs.join('\n\n') }
     }

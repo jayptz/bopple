@@ -1,4 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { absolutePreviewUrl } from '@/lib/preview-url'
+
+export { absolutePreviewUrl } from '@/lib/preview-url'
 
 const NAV_TIMEOUT_MS = 45_000
 const SETTLE_MS = 2_000
@@ -13,8 +16,7 @@ export const PREVIEW_READY_TIMEOUT_MS = 60_000
 const PREVIEW_READY_POLL_MS = 2_000
 
 function toAbsoluteUrl(previewUrl: string, route: string): string {
-  // E2B's getHost() returns a bare host (no scheme) — normalize to https.
-  const base = previewUrl.startsWith('http') ? previewUrl : `https://${previewUrl}`
+  const base = absolutePreviewUrl(previewUrl)
   const path = route.startsWith('/') ? route : `/${route}`
   return `${base.replace(/\/$/, '')}${path}`
 }

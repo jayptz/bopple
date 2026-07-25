@@ -4,12 +4,12 @@ interface DiffViewerProps {
 }
 
 function lineClass(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-zinc-400'
-  if (line.startsWith('+')) return 'text-emerald-400 bg-emerald-950/30'
-  if (line.startsWith('-')) return 'text-red-400 bg-red-950/30'
-  if (line.startsWith('@@')) return 'text-sky-400'
-  if (line.startsWith('diff ') || line.startsWith('index ')) return 'text-zinc-500'
-  return 'text-zinc-300'
+  if (line.startsWith('+++') || line.startsWith('---')) return 'text-dash-text/50'
+  if (line.startsWith('+')) return 'text-dash-accent bg-dash-accent/10'
+  if (line.startsWith('-')) return 'text-dash-text/40 bg-dash-text/5'
+  if (line.startsWith('@@')) return 'text-dash-text/50'
+  if (line.startsWith('diff ') || line.startsWith('index ')) return 'text-dash-text/40'
+  return 'text-dash-text/80'
 }
 
 export function DiffViewer({
@@ -18,7 +18,7 @@ export function DiffViewer({
 }: DiffViewerProps) {
   if (!diff) {
     return (
-      <pre className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-950 p-4 text-xs font-mono text-zinc-500 leading-relaxed">
+      <pre className="overflow-x-auto rounded-lg border border-dash-border bg-dash-bg p-4 text-xs font-mono text-dash-text/40 leading-relaxed">
         {placeholder}
       </pre>
     )
@@ -27,7 +27,7 @@ export function DiffViewer({
   const lines = diff.split('\n')
 
   return (
-    <pre className="overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-950 p-2 text-xs font-mono leading-relaxed">
+    <pre className="overflow-x-auto rounded-lg border border-dash-border bg-dash-bg p-2 text-xs font-mono leading-relaxed">
       {lines.map((line, i) => (
         <div key={i} className={`whitespace-pre-wrap break-all px-2 py-px ${lineClass(line)}`}>
           {line || ' '}

@@ -104,11 +104,12 @@ export const MODEL_OPTIONS = [
 
 export const DEFAULT_MODEL = MODEL_OPTIONS[0].value
 
+/** @deprecated Prefer plain text — dashboard no longer renders emoji prefixes. */
 export const AGENT_LOG_ICONS: Record<AgentLogType, string> = {
-  thinking: '🤔',
-  reading: '📖',
-  writing: '✏️',
-  running: '⚡',
-  committing: '📦',
-  done: '✅',
+  thinking: '',
+  reading: '',
+  writing: '',
+  running: '',
+  committing: '',
+  done: '',
 }

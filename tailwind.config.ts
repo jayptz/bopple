@@ -11,6 +11,12 @@ const config: Config = {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        dash: {
+          bg: "var(--color-bg)",
+          accent: "var(--color-accent)",
+          text: "var(--color-text)",
+          border: "var(--color-border)",
+        },
       },
     },
   },

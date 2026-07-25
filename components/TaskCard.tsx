@@ -1,10 +1,8 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import {
-  AGENT_LOG_ICONS,
   type AgentLogEntry,
   type FeedbackEntry,
   type Task,
@@ -55,9 +53,6 @@ function AgentActivityFeed({ logs }: { logs: AgentLogEntry[] }) {
           key={`${log.timestamp}-${index}`}
           className="flex items-start gap-2 text-xs text-zinc-300 font-mono"
         >
-          <span className="shrink-0" aria-hidden>
-            {AGENT_LOG_ICONS[log.type]}
-          </span>
           <span className="min-w-0 break-words">{log.message}</span>
         </div>
       ))}
@@ -185,8 +180,8 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="mt-0.5 text-sm text-zinc-200 line-clamp-2">{task.prompt}</p>
+          <p className="mt-1 text-[10px] text-zinc-500 capitalize">{task.status.replace(/_/g, ' ')}</p>
         </div>
-        <Badge status={task.status} />
       </div>
 
       {task.reference_image_base64 && (
@@ -240,7 +235,7 @@ export function TaskCard({ task, onTaskUpdated }: TaskCardProps) {
           )}
           {task.demo_url && (
             <a
-              href={task.demo_url}
+              href={task.demo_url.startsWith('http') ? task.demo_url : `https://${task.demo_url}`}
               target="_blank"
               rel="noopener noreferrer"
               className="block text-sm text-blue-400 hover:text-blue-300"
