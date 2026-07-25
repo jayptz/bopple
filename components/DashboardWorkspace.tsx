@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { DiffViewer } from '@/components/DiffViewer'
+import { RecentActivity } from '@/components/RecentActivity'
 import { AGENT_LOG_ICONS, type Task, type Repo, type FeedbackEntry } from '@/types'
 
 function timeAgo(date: string) {
@@ -367,6 +368,7 @@ export function DashboardWorkspace() {
             </div>
           </div>
 
+          <RecentActivity />
           <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-3">
             {grouped.length === 0 ? (
               <p className="px-2 py-4 text-xs text-zinc-600">No tasks yet.</p>
