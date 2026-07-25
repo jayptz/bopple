@@ -1,32 +1,41 @@
 /**
- * Simulated Telegram message sequence for explicit-continuation routing + repo parsing.
+ * Repo routing + explicit-continuation tests.
+ * Uses a representative slice of the live connected-repo naming conventions.
  * Run: npx tsx scripts/test-telegram-routing.ts
  */
 import {
   decideTelegramRoute,
+  formatResolveLog,
   formatRouteLog,
-  normalizeRepoToken,
+  normalize,
   resolveRepoFromMessage,
   shortRepoName,
   type ConnectedRepo,
   type ContinuableTaskRef,
 } from '../lib/telegram-routing'
 
+/** Representative sample spanning real account naming conventions. */
 const repos: ConnectedRepo[] = [
-  { id: 'id-a', full_name: 'jayptz/repo-a', name: 'repo-a' },
-  { id: 'id-b', full_name: 'jayptz/repo-b', name: 'repo-b' },
-  { id: 'id-yaj', full_name: 'jayptz/Yaj.AI', name: 'Yaj.AI' },
+  { id: '1', full_name: 'jayptz/bopple', name: 'bopple' },
+  { id: '2', full_name: 'jayptz/yaj-ai', name: 'yaj-ai' },
+  { id: '3', full_name: 'jayptz/essential-oils-website', name: 'essential-oils-website' },
+  { id: '4', full_name: 'jayptz/jaysportfolio', name: 'jaysportfolio' },
+  { id: '5', full_name: 'jayptz/CP317-SoftEng', name: 'CP317-SoftEng' },
+  { id: '6', full_name: 'jayptz/OrbitShare', name: 'OrbitShare' },
+  { id: '7', full_name: 'jayptz/g1-app', name: 'g1-app' },
+  { id: '8', full_name: 'jayptz/my-app', name: 'my-app' },
+  { id: '9', full_name: 'jayptz/test-repo', name: 'test-repo' },
 ]
 
-const taskARunning: ContinuableTaskRef = {
-  id: 'task-a',
-  repo_full_name: 'jayptz/repo-a',
+const taskBoppleRunning: ContinuableTaskRef = {
+  id: 'task-bopple',
+  repo_full_name: 'jayptz/bopple',
   status: 'running',
 }
 
-const taskAAwaiting: ContinuableTaskRef = {
-  id: 'task-a',
-  repo_full_name: 'jayptz/repo-a',
+const taskBoppleAwaiting: ContinuableTaskRef = {
+  id: 'task-bopple',
+  repo_full_name: 'jayptz/bopple',
   status: 'awaiting_feedback',
 }
 
@@ -41,7 +50,7 @@ function assert(name: string, cond: boolean, detail?: string) {
   }
 }
 
-function simulate(
+function route(
   message: string,
   opts: {
     forceNew?: boolean
@@ -55,129 +64,178 @@ function simulate(
     explicitReply: opts.explicitReply ?? false,
     resolved,
     continuationTask: opts.continuationTask ?? null,
+    connected: repos,
   })
-
   console.log(`  msg: ${JSON.stringify(message)}`)
+  console.log(`  ${formatResolveLog(resolved, repos)}`)
   console.log(`  ${formatRouteLog(decision)}`)
   return { resolved, decision }
 }
 
-console.log('\n--- FIX 2: plain message while A running → always new_task ---\n')
+console.log('\n=== normalize() samples ===\n')
 {
-  const { decision } = simulate('add a dark mode toggle', {
+  const samples: Array<[string, string]> = [
+    ['yaj-ai', 'yajai'],
+    ['Yaj.AI', 'yajai'],
+    ['YajAI', 'yajai'],
+    ['CP317-SoftEng', 'cp317softeng'],
+    ['essential-oils-website', 'essentialoilswebsite'],
+    ['jaysportfolio', 'jaysportfolio'],
+    ['OrbitShare', 'orbitshare'],
+    ['g1-app', 'g1app'],
+  ]
+  for (const [input, expected] of samples) {
+    assert(`normalize(${JSON.stringify(input)})`, normalize(input) === expected, normalize(input))
+  }
+}
+
+console.log('\n=== 1. Casing / separator variants → correct repo ===\n')
+{
+  const cases: Array<[string, string]> = [
+    ['On my Yaj.AI repo, add a Recent Activity section', 'jayptz/yaj-ai'],
+    ['on yaj ai fix the navbar', 'jayptz/yaj-ai'],
+    ['on YajAI add dark mode', 'jayptz/yaj-ai'],
+    ['on yaj-ai send me a screenshot', 'jayptz/yaj-ai'],
+    ['on CP317 SoftEng fix the README', 'jayptz/CP317-SoftEng'],
+    ['on cp317-softeng add tests', 'jayptz/CP317-SoftEng'],
+    ['on OrbitShare tweak the hero', 'jayptz/OrbitShare'],
+    ['on orbit share tweak the hero', 'jayptz/OrbitShare'],
+    ['on jaysportfolio update the bio', 'jayptz/jaysportfolio'],
+    ['on essential-oils-website change the price', 'jayptz/essential-oils-website'],
+    ['on essential oils website change the price', 'jayptz/essential-oils-website'],
+    ['on g1-app bump the version', 'jayptz/g1-app'],
+  ]
+  for (const [msg, expected] of cases) {
+    const { resolved, decision } = route(msg)
+    assert(
+      `match ${expected} from ${JSON.stringify(msg).slice(0, 40)}…`,
+      resolved.status === 'matched' &&
+        resolved.repo.full_name === expected &&
+        decision.action === 'new_task' &&
+        decision.repo.full_name === expected,
+      resolved.status === 'matched'
+        ? `got ${resolved.repo.full_name}`
+        : `status=${resolved.status}`
+    )
+  }
+}
+
+console.log('\n=== 2. Incidental words must NOT false-match ===\n')
+{
+  // "for now" must not become unknown "now" or match any repo.
+  const { resolved, decision } = route(
+    'keep it simple with mock data for now, send me a screenshot'
+  )
+  assert(
+    '"for now" → no_repo_match (not unknown now, not a real repo)',
+    resolved.status === 'none' && decision.action === 'no_repo_match',
+    resolved.status === 'unknown'
+      ? `unknown=${resolved.name}`
+      : `${resolved.status}/${decision.action}`
+  )
+
+  // "website" alone should not steal essential-oils-website via substring.
+  const r2 = resolveRepoFromMessage('update the website copy please', repos)
+  assert(
+    '"website" alone does not match essential-oils-website',
+    r2.status === 'none',
+    r2.status === 'matched' ? r2.repo.full_name : r2.status
+  )
+
+  // "oils" alone should not match essential-oils-website (needs full normalized sequence).
+  const r3 = resolveRepoFromMessage('change the oils section color', repos)
+  assert(
+    '"oils" alone does not match essential-oils-website',
+    r3.status === 'none',
+    r3.status === 'matched' ? r3.repo.full_name : r3.status
+  )
+}
+
+console.log('\n=== 3. Zero matches → no_repo_match, never invent a repo ===\n')
+{
+  const { decision } = route('add a dark mode toggle')
+  assert(
+    'no repo named → no_repo_match (NOT new_task on repos[0])',
+    decision.action === 'no_repo_match' && decision.connected.length === repos.length
+  )
+
+  const { decision: d2 } = route('on totally-fake-repo fix bugs')
+  assert(
+    'unknown hint → unknown_repo, no task',
+    d2.action === 'unknown_repo' && d2.name === 'totally-fake-repo'
+  )
+}
+
+console.log('\n=== 4. Ambiguous → ask, do not pick ===\n')
+{
+  // Two repos in one message should be ambiguous.
+  const { resolved, decision } = route('on bopple and on yaj-ai add a footer')
+  assert(
+    'two repos → ambiguous',
+    resolved.status === 'ambiguous' && decision.action === 'ask_ambiguous',
+    resolved.status === 'ambiguous'
+      ? resolved.repos.map((r) => r.full_name).join(',')
+      : resolved.status
+  )
+}
+
+console.log('\n=== 5. Named repo while another task is running → named repo wins ===\n')
+{
+  const { decision } = route('on yaj-ai add Recent Activity', {
+    continuationTask: null, // no reply-to / /reply
+  })
+  assert(
+    'yaj-ai while bopple running elsewhere → new_task on yaj-ai',
+    decision.action === 'new_task' && decision.repo.full_name === 'jayptz/yaj-ai'
+  )
+
+  // Same message must NOT become feedback on the running bopple task.
+  const { decision: d2 } = route('on yaj-ai add Recent Activity', {
     continuationTask: null,
   })
-  assert(
-    'plain message is new_task even if A is running elsewhere',
-    decision.action === 'new_task' && decision.reason === 'new_task_default_repo'
-  )
+  assert('not feedback on active bopple', d2.action !== 'feedback')
 }
 
-console.log('\n--- FIX 2: same-repo mention while A awaiting → still new_task ---\n')
+console.log('\n=== Explicit continuation still works without re-naming repo ===\n')
 {
-  const { decision } = simulate('on repo-a make the footer smaller', {
-    continuationTask: null,
+  const { decision } = route('make the footer smaller', {
+    continuationTask: taskBoppleAwaiting,
   })
   assert(
-    'repo match does NOT auto-feedback',
-    decision.action === 'new_task' &&
-      decision.repo?.full_name === 'jayptz/repo-a' &&
-      decision.reason === 'new_task_with_matched_repo',
-    decision.action === 'feedback' ? `incorrectly feedback to ${decision.taskId}` : undefined
+    'reply-to → feedback on bopple task',
+    decision.action === 'feedback' && decision.taskId === 'task-bopple'
   )
-}
 
-console.log('\n--- FIX 2: reply-to Done message → feedback on A ---\n')
-{
-  const { decision } = simulate('make the footer smaller', {
-    continuationTask: taskAAwaiting,
-    explicitReply: false,
-  })
-  assert(
-    'telegram reply-to continues A',
-    decision.action === 'feedback' &&
-      decision.taskId === 'task-a' &&
-      decision.reason === 'telegram_reply_to_task_message'
-  )
-}
-
-console.log('\n--- FIX 2: /reply without reply-to → most recent active ---\n')
-{
-  // Assumption: webhook passes most recent active as continuationTask for /reply.
-  const { decision } = simulate('make the footer smaller', {
+  const { decision: d2 } = route('make the footer smaller', {
     explicitReply: true,
-    continuationTask: taskARunning,
+    continuationTask: taskBoppleRunning,
   })
   assert(
-    '/reply continues most recent active (A)',
-    decision.action === 'feedback' &&
-      decision.taskId === 'task-a' &&
-      decision.reason === 'explicit_reply_command'
+    '/reply → feedback on most recent active',
+    d2.action === 'feedback' && d2.reason === 'explicit_reply_command'
   )
 }
 
-console.log('\n--- FIX 2: naming B while A running → new on B ---\n')
-{
-  const { decision } = simulate('on repo-b fix the timeout', {
-    continuationTask: null,
-  })
-  assert(
-    'cross-repo message creates new task on B',
-    decision.action === 'new_task' && decision.repo?.full_name === 'jayptz/repo-b'
-  )
-}
-
-console.log('\n--- FIX 3: Yaj.AI message must not match "now" ---\n')
+console.log('\n=== Original Yaj.AI + for now sentence (live shape) ===\n')
 {
   const msg =
     'On my Yaj.AI repo, add a Recent Activity section to the dashboard showing the last 5 workflow runs, keep it simple with mock data for now, send me a screenshot.'
-
   console.log(
-    '  connected:',
-    repos.map((r) => `${r.full_name} short=${shortRepoName(r.full_name)} norm=${normalizeRepoToken(shortRepoName(r.full_name))}`).join(' | ')
+    '  connected norms:',
+    repos.map((r) => `${shortRepoName(r.full_name)}→${normalize(shortRepoName(r.full_name))}`).join(' | ')
   )
-
-  const { resolved, decision } = simulate(msg, { continuationTask: null })
-
+  const { resolved, decision } = route(msg)
   assert(
-    'Yaj.AI matched (not unknown/default)',
-    resolved.status === 'matched' && resolved.repo.full_name === 'jayptz/Yaj.AI',
-    resolved.status === 'unknown'
-      ? `unknown name=${resolved.name}`
-      : resolved.status === 'matched'
-        ? `matched ${resolved.repo.full_name}`
+    'Yaj.AI sentence → jayptz/yaj-ai',
+    resolved.status === 'matched' &&
+      resolved.repo.full_name === 'jayptz/yaj-ai' &&
+      decision.action === 'new_task' &&
+      decision.repo.full_name === 'jayptz/yaj-ai',
+    resolved.status === 'matched'
+      ? resolved.repo.full_name
+      : resolved.status === 'unknown'
+        ? `unknown=${resolved.name}`
         : resolved.status
-  )
-  assert(
-    'does not report unknown repo "now"',
-    !(resolved.status === 'unknown' && resolved.name === 'now')
-  )
-  assert(
-    'new task targets Yaj.AI',
-    decision.action === 'new_task' && decision.repo?.full_name === 'jayptz/Yaj.AI'
-  )
-}
-
-console.log('\n--- FIX 3: "for now" alone must not be unknown ---\n')
-{
-  const resolved = resolveRepoFromMessage(
-    'keep it simple with mock data for now',
-    repos
-  )
-  assert(
-    '"for now" → default (stopword), not unknown now',
-    resolved.status === 'default',
-    resolved.status === 'unknown' ? `got unknown ${resolved.name}` : resolved.status
-  )
-}
-
-console.log('\n--- FIX 3: YajAI without period still matches ---\n')
-{
-  const resolved = resolveRepoFromMessage('on YajAI add a navbar', repos)
-  assert(
-    'punctuation-stripped YajAI matches Yaj.AI',
-    resolved.status === 'matched' && resolved.repo.full_name === 'jayptz/Yaj.AI',
-    resolved.status === 'matched' ? resolved.repo.full_name : resolved.status
   )
 }
 

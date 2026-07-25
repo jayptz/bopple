@@ -11,6 +11,8 @@ import {
 import {
   ACTIVE_TASK_STATUSES,
   decideTelegramRoute,
+  formatConnectedRepoList,
+  formatResolveLog,
   formatRouteLog,
   resolveRepoFromMessage,
   type ConnectedRepo,
@@ -205,7 +207,7 @@ export async function POST(req: NextRequest) {
     if (text === '/help') {
       await sendMessage(
         chatId,
-        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\nMention a connected repo by name — e.g. _on bopple fix the timeout_ or _add a project to hotspots_. No repo name? I'll use your default.\n\nEvery message starts a *new* task. To continue an existing one, *reply* to my Done/update message, or send `/reply …` (continues your most recent active task).\n\nSend *stop* while a task is running to pause after the current step.\n\nSay /new before a message if you want to force a brand new task.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
+        "Send me a coding task in plain English and I'll write the code, open a PR, and ping you when it's done.\n\nYou can also send a *screenshot* with a caption — I'll use it as a visual reference.\n\n*Name a connected repo* in the message — e.g. _on yaj-ai fix the timeout_ or _add a project to hotspots_. I won't guess a repo.\n\nEvery message starts a *new* task. To continue an existing one, *reply* to my Done/update message, or send `/reply …` (continues your most recent active task).\n\nSend *stop* while a task is running to pause after the current step.\n\nFirst time? Copy `/connect <token>` from Bopple Settings and send it here."
       )
       return NextResponse.json({ ok: true })
     }
@@ -357,17 +359,7 @@ export async function POST(req: NextRequest) {
     )
 
     const resolved = resolveRepoFromMessage(taskText || '', repos)
-    if (resolved.status === 'matched') {
-      console.log(`[telegram] repo_resolve matched=${resolved.repo.full_name}`)
-    } else if (resolved.status === 'ambiguous') {
-      console.log(
-        `[telegram] repo_resolve ambiguous=${resolved.repos.map((r) => r.full_name).join(',')}`
-      )
-    } else if (resolved.status === 'unknown') {
-      console.log(`[telegram] repo_resolve unknown=${resolved.name}`)
-    } else {
-      console.log('[telegram] repo_resolve default')
-    }
+    console.log(formatResolveLog(resolved, repos))
 
     const continuationTask =
       !forceNew && (explicitReply || replyToMessageId != null)
@@ -395,6 +387,7 @@ export async function POST(req: NextRequest) {
       explicitReply,
       resolved,
       continuationTask,
+      connected: repos,
     })
 
     console.log(formatRouteLog(decision))
@@ -408,7 +401,15 @@ export async function POST(req: NextRequest) {
     if (decision.action === 'unknown_repo') {
       await sendMessage(
         chatId,
-        `I don't see a repo called ${decision.name} connected. Add it in the dashboard first.`
+        `I don't see a repo called *${decision.name}* connected.\n\nYour repos: ${formatConnectedRepoList(repos)}`
+      )
+      return NextResponse.json({ ok: true })
+    }
+
+    if (decision.action === 'no_repo_match') {
+      await sendMessage(
+        chatId,
+        `I couldn't tell which repo you mean — name one clearly (e.g. _on yaj-ai …_). No task was created.\n\nYour repos: ${formatConnectedRepoList(repos)}`
       )
       return NextResponse.json({ ok: true })
     }
@@ -461,13 +462,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true })
     }
 
-    // --- new_task ---
+    // --- new_task (requires decision.repo — never fall back to repos[0]) ---
     if (!taskText) {
-      await sendMessage(chatId, 'Tell me what you want changed — e.g. /new add a dark mode toggle')
+      await sendMessage(chatId, 'Tell me what you want changed — e.g. on bopple add a dark mode toggle')
       return NextResponse.json({ ok: true })
     }
 
-    const repo = decision.repo ?? repos[0]
+    const repo = decision.repo
 
     const { data: task, error: taskError } = await supabase
       .from('tasks')
