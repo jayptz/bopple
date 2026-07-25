@@ -510,7 +510,7 @@ export function DashboardWorkspace() {
                         <span className="w-3 shrink-0 text-dash-text/35">
                           {open ? '▾' : '▸'}
                         </span>
-                        <span className="truncate font-mono">
+                        <span className="truncate font-mono text-dash-accent">
                           {shortRepoLabel(group.fullName)}
                         </span>
                       </button>
@@ -575,9 +575,19 @@ export function DashboardWorkspace() {
                   <p className="truncate text-sm font-medium text-dash-text">
                     {selectedTask.prompt}
                   </p>
-                  <p className="truncate text-xs font-mono text-dash-text/45">
+                  <p className="truncate text-xs font-mono text-dash-accent">
                     {selectedTask.repo_full_name}
-                    {statusHint ? ` · ${statusHint}` : ''}
+                    {statusHint ? (
+                      <span
+                        className={
+                          selectedTask.status === 'awaiting_feedback'
+                            ? 'text-dash-accent'
+                            : 'text-dash-text/45'
+                        }
+                      >
+                        {` · ${statusHint}`}
+                      </span>
+                    ) : null}
                   </p>
                 </div>
               </header>
@@ -601,13 +611,16 @@ export function DashboardWorkspace() {
 
                 {(selectedTask.agent_logs ?? []).map((log, i) => {
                   const narration = isNarrationLog(log)
+                  const isPrOpened = log.type === 'done'
                   return (
                     <div
                       key={`${log.timestamp}-${i}`}
                       className={
-                        narration
-                          ? 'max-w-[min(90%,32rem)] rounded-2xl border border-dash-border bg-dash-bg px-4 py-2.5 text-sm leading-relaxed text-dash-text'
-                          : 'max-w-[min(90%,32rem)] rounded-xl border border-dash-border bg-dash-bg px-3 py-2 text-xs font-mono leading-relaxed text-dash-text/70'
+                        isPrOpened
+                          ? 'max-w-[min(90%,32rem)] rounded-2xl border border-dash-border bg-dash-bg px-4 py-2.5 text-sm leading-relaxed text-dash-accent'
+                          : narration
+                            ? 'max-w-[min(90%,32rem)] rounded-2xl border border-dash-border bg-dash-bg px-4 py-2.5 text-sm leading-relaxed text-dash-text'
+                            : 'max-w-[min(90%,32rem)] rounded-xl border border-dash-border bg-dash-bg px-3 py-2 text-xs font-mono leading-relaxed text-dash-text/70'
                       }
                     >
                       {log.message}
@@ -757,7 +770,7 @@ export function DashboardWorkspace() {
                     </p>
                   )}
                   {changedFiles.length > 0 && (
-                    <ul className="mt-2 space-y-0.5 font-mono text-dash-text/70">
+                    <ul className="mt-2 space-y-0.5 font-mono text-dash-accent">
                       {changedFiles.map((path) => (
                         <li key={path} className="truncate">
                           {path}

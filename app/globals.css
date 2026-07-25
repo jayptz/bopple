@@ -13,10 +13,10 @@
   --green: #3ecf8e;
 
   /* Dashboard color system */
-  --color-bg: #000000;
+  --color-bg: #222021;
   --color-accent: #00834e;
   --color-text: #ffffff;
-  --color-border: #2a2a2a;
+  --color-border: #363636;
 }
 
 * {

@@ -83,7 +83,7 @@ export function DashboardUserMenu({
           </span>
         )}
         {showUsername && githubUsername && (
-          <span className="truncate text-xs text-dash-text">{githubUsername}</span>
+          <span className="truncate text-xs text-dash-accent">{githubUsername}</span>
         )}
       </button>
 
