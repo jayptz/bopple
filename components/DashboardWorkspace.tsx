@@ -96,6 +96,29 @@ function SettingsGearIcon({ className }: { className?: string }) {
   )
 }
 
+function TrashIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  )
+}
+
 export function DashboardWorkspace() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [repos, setRepos] = useState<Repo[]>([])
@@ -116,6 +139,7 @@ export function DashboardWorkspace() {
   const [resolving, setResolving] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [mobilePane, setMobilePane] = useState<'sidebar' | 'chat' | 'code'>('chat')
   const [fetchedDiff, setFetchedDiff] = useState<string | null>(null)
@@ -186,6 +210,7 @@ export function DashboardWorkspace() {
             const oldRow = payload.old as { id?: string }
             if (oldRow.id) {
               setTasks((prev) => prev.filter((t) => t.id !== oldRow.id))
+              setSelectedTaskId((current) => (current === oldRow.id ? null : current))
             }
             return
           }
@@ -374,6 +399,37 @@ export function DashboardWorkspace() {
     }
   }
 
+  async function deleteTask(task: Task) {
+    if (task.status === 'running') {
+      setError('This task is still running. Stop it or wait until it finishes before deleting.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      "Delete this task? This can't be undone."
+    )
+    if (!confirmed) return
+
+    setDeletingTaskId(task.id)
+    setError(null)
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' })
+      const data = (await res.json()) as { error?: string }
+      if (!res.ok) throw new Error(data.error ?? 'Failed to delete task')
+
+      setTasks((prev) => prev.filter((t) => t.id !== task.id))
+      setSelectedTaskId((current) => {
+        if (current !== task.id) return current
+        const remaining = tasks.filter((t) => t.id !== task.id)
+        return remaining[0]?.id ?? null
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete task')
+    } finally {
+      setDeletingTaskId(null)
+    }
+  }
+
   async function stopTask() {
     if (!selectedTask) return
     setStopping(true)
@@ -516,26 +572,59 @@ export function DashboardWorkspace() {
                       </button>
                       {open && (
                         <div className="mb-1 ml-3 space-y-0.5 border-l border-dash-border pl-2">
-                          {group.tasks.map((task) => (
-                              <button
+                          {group.tasks.map((task) => {
+                            const isRunning = task.status === 'running'
+                            const isDeleting = deletingTaskId === task.id
+                            return (
+                              <div
                                 key={task.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedTaskId(task.id)
-                                  setMobilePane('chat')
-                                }}
-                                className={`w-full rounded-md px-2 py-1.5 text-left transition-colors ${
+                                className={`group relative rounded-md transition-colors ${
                                   selectedTaskId === task.id
                                     ? 'bg-dash-text/10 text-dash-text'
                                     : 'text-dash-text/60 hover:bg-dash-text/5 hover:text-dash-text'
                                 }`}
                               >
-                                <p className="truncate text-xs">{task.prompt}</p>
-                                <p className="mt-0.5 text-[10px] text-dash-text/35">
-                                  {timeAgo(task.created_at)}
-                                </p>
-                              </button>
-                            ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedTaskId(task.id)
+                                    setMobilePane('chat')
+                                  }}
+                                  className="w-full px-2 py-1.5 pr-8 text-left"
+                                >
+                                  <p className="truncate text-xs">{task.prompt}</p>
+                                  <p className="mt-0.5 text-[10px] text-dash-text/35">
+                                    {timeAgo(task.created_at)}
+                                  </p>
+                                </button>
+                                <button
+                                  type="button"
+                                  title={
+                                    isRunning
+                                      ? 'Stop or wait for this task to finish before deleting'
+                                      : 'Delete task'
+                                  }
+                                  aria-label={
+                                    isRunning
+                                      ? 'Cannot delete running task'
+                                      : 'Delete task'
+                                  }
+                                  disabled={isRunning || isDeleting}
+                                  onClick={(e) => {
+                                    e.stopPropagation()
+                                    void deleteTask(task)
+                                  }}
+                                  className={`absolute right-1 top-1/2 -translate-y-1/2 rounded p-1 opacity-100 transition-opacity lg:opacity-0 lg:group-hover:opacity-100 lg:focus-visible:opacity-100 disabled:cursor-not-allowed ${
+                                    isRunning
+                                      ? 'text-dash-text/25 lg:group-hover:opacity-60'
+                                      : 'text-dash-text/45 hover:bg-dash-text/10 hover:text-dash-text'
+                                  }`}
+                                >
+                                  <TrashIcon className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
+                            )
+                          })}
                         </div>
                       )}
                     </div>
