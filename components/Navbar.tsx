@@ -41,12 +41,12 @@ function NavBarContent() {
     <div className="relative flex items-center justify-between">
       <Logo />
 
-      <nav className="absolute top-1/2 left-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-9 md:flex">
+      <nav className="absolute top-1/2 left-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center gap-6 lg:flex">
         {links.map((l) => (
           <a
             key={l.href}
             href={l.href}
-            className="text-[14px] text-[#8B95A8] transition hover:text-white"
+            className="whitespace-nowrap text-[14px] text-[#8B95A8] transition hover:text-white"
           >
             {l.label}
           </a>
@@ -56,7 +56,7 @@ function NavBarContent() {
       <div className="flex items-center gap-6">
         <a
           href="#quickstart"
-          className="hidden text-[14px] text-[#8B95A8] transition hover:text-white sm:inline"
+          className="hidden text-[14px] text-[#8B95A8] transition hover:text-white lg:inline"
         >
           Docs
         </a>
