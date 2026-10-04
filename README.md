@@ -2,7 +2,7 @@
 
 Text a task. Get a PR. Go live your life.
 
-<video src="./bopple-demo2.mp4" controls></video>
+![Bopple demo](./bopple-demo2.mp4)
 
 Demo of Bopple taking a Telegram task through to a pull request. [Technical writeup](https://jayptz.me/blogs/bopple).
 
