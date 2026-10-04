@@ -2,6 +2,10 @@
 
 Text a task. Get a PR. Go live your life.
 
+<video src="./bopple-demo2.mp4" controls></video>
+
+Demo of Bopple taking a Telegram task through to a pull request. [Technical writeup](https://jayptz.me/blogs/bopple).
+
 Bopple is an async coding agent you control from your phone. Send a prompt from Telegram while you're out — Bopple writes the code, opens a pull request, and pings you when it's ready. Nothing ever touches main without your approval.
 
 ---

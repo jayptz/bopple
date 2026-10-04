@@ -1,7 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { Hero } from "@/components/Hero";
+import { IntroExperience } from "@/components/Intro/IntroExperience";
 import { LifeMoments } from "@/components/LifeMoments";
 import { Philosophy } from "@/components/Philosophy";
 import { HowItWorks } from "@/components/HowItWorks";
@@ -12,12 +11,11 @@ import { Pricing } from "@/components/Pricing";
 import { FinalCTA } from "@/components/FinalCTA";
 import { Footer } from "@/components/Footer";
 
-export function HomeClient({ front }: { front: ReactNode }) {
+export function HomeClient() {
   return (
     <>
       <main>
-        {front}
-        <Hero />
+        <IntroExperience />
         <LifeMoments />
         <Philosophy />
         <HowItWorks />
