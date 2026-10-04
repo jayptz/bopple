@@ -1,8 +1,11 @@
 "use client";
 
+import { useId } from "react";
 import { motion } from "framer-motion";
 
 const links = [
+  { href: "#demo", label: "Demo" },
+  { href: "#writeup", label: "Writeup" },
   { href: "#moments", label: "Examples" },
   { href: "#how-it-works", label: "How it works" },
   { href: "#features", label: "Features" },
@@ -10,16 +13,18 @@ const links = [
 ];
 
 function Logo() {
+  const gradientId = `logo-grad-${useId().replace(/:/g, "")}`;
+
   return (
     <a href="/" className="group flex items-center gap-2.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#2AABEE]/30 bg-gradient-to-br from-[#2AABEE]/20 to-[#3ECF8E]/10 shadow-[0_0_16px_rgba(42,171,238,0.15)] transition group-hover:border-[#2AABEE]/50">
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
           <path
             d="M4 3h5.5a3 3 0 0 1 0 6H4V3zm0 6h6a3 3 0 0 1 0 6H4V9z"
-            fill="url(#logo-grad)"
+            fill={`url(#${gradientId})`}
           />
           <defs>
-            <linearGradient id="logo-grad" x1="4" y1="3" x2="12" y2="15">
+            <linearGradient id={gradientId} x1="4" y1="3" x2="12" y2="15">
               <stop stopColor="#2AABEE" />
               <stop offset="1" stopColor="#3ECF8E" />
             </linearGradient>

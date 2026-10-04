@@ -1,112 +1,91 @@
 # Bopple
 
-> Text a task. Get a PR. Go live your life.
+Text a task. Get a PR. Go live your life.
 
-Bopple is an async coding agent you control from your phone. Send a prompt from Telegram or the dashboard while you're out — Bopple writes the code, opens a pull request, and pings you when it's ready for review. Your codebase never gets touched without your approval.
+Bopple is an async coding agent you control from your phone. Send a prompt from Telegram while you're out — Bopple writes the code, opens a pull request, and pings you when it's ready. Nothing ever touches main without your approval.
 
 ---
 
 ## How it works
 
 ```
-You text a task from your phone
-         ↓
-Bopple reads your repo context
-         ↓
+You text a task from Telegram
+        ↓
+Bopple clones your repo in a cloud VM
+        ↓
 Claude writes the code on a new branch
-         ↓
-GitHub PR is opened automatically
-         ↓
-You get a notification
-         ↓
+        ↓
+PR opens on GitHub automatically
+        ↓
+You get a notification with the PR link + live preview
+        ↓
 You review and merge — or don't
 ```
 
-No code ever hits `main` without you. Every task ends in a reviewable PR, not a silent commit.
+---
+
+## Why Bopple
+
+Every other async coding agent expects you to change how you work.
+
+Cursor requires their IDE. Jules requires GitHub issues. Devin lives in Slack. Codex lives in ChatGPT.
+
+Bopple runs in Telegram — an app you already have on your phone. No new subscriptions, no IDE switch, no ecosystem lock-in.
 
 ---
 
-## Why Bopple 
-
-Existing AI coding agents expect you to change how you work.
-
-Cursor requires an IDE.
-Jules requires GitHub.
-Devin lives in Slack.
-
-Bopple meets developers where they already are.
-
-Text a task.
-Review a pull request.
-Ship.
-
 ## Features
 
-- **Messenger-native** — send tasks via Telegram, no app download required
-- **Mobile dashboard** — see every task running, queued, or done in real time
-- **Auto PR** — every task opens a GitHub pull request on a new branch
-- **BYOK** — bring your own Anthropic or OpenAI API key, pay nothing to Bopple
-- **Subscription tier** — skip the key management, just use it
-- **Multi-model** — Claude, GPT-4, or Gemini, your choice
-- **Repo-aware** — indexes your codebase so context is always included
-- **Team-ready** — solo devs, small teams, and larger orgs all supported
-- **Async by design** — fire a task, close your phone, come back to a PR
+- Telegram-native input — text a task like you'd text a person
+- Cloud VM per task — isolated environment, runs your code, never touches your laptop
+- Auto PR — every task opens a GitHub pull request on a new branch
+- Live preview — see the running app before you merge
+- BYOK — bring your own Anthropic or OpenAI key, pay nothing to Bopple
+- Works with any IDE — VS Code, Cursor, JetBrains, Neovim, whatever
+- Mobile dashboard — real-time task feed, diffs, and status
+- Async by design — fire a task, close your phone, come back to a PR
 
 ---
 
 ## Quickstart
 
-### 1. Sign in with GitHub
+**1. Sign in with GitHub**
 
-One click. Bopple reads your repos via GitHub OAuth — no manual setup, no config files.
+One click. Bopple connects to your repos via GitHub OAuth — no config files, no manual setup.
 
-### 2. Connect Telegram
+**2. Connect Telegram**
 
-Start a chat with `@BoppleBot` and link it to your account. That's your prompt interface.
+Message `@BoppleSBot` and link it to your account. That's your entire interface.
 
-### 3. Add your API key (or subscribe)
+**3. Add your API key**
 
-**BYOK (free):** Paste your Anthropic or OpenAI API key in settings. You pay the model provider directly, Bopple charges nothing.
+Paste your Anthropic or OpenAI API key in settings. You pay the model provider directly.
 
-**Pro ($15/month):** Skip the key. Bopple absorbs the API cost with a monthly token allocation included.
-
-### 4. Send your first task
+**4. Send your first task**
 
 ```
-You → @BoppleBot:
-"add input validation to the signup form, handle empty fields and invalid email format"
+You → @BoppleSBot:
+"add input validation to the signup form"
 
-Bopple → You (6 min later):
-"✅ Done — PR #47 is open on branch feat/signup-validation
+Bopple → 6 min later:
+"✅ Done — PR #47 open on feat/signup-validation
  3 files changed, +89 lines
- Ready for review → github.com/you/repo/pull/47"
+ Review → github.com/you/repo/pull/47
+ Preview → https://preview.bopple.dev/abc123"
 ```
-
----
-
-## Pricing
-
-| | Free | Pro | Team |
-|---|---|---|---|
-| Bring your own API key | ✅ | ✅ | ✅ |
-| Included token allocation | — | ✅ | ✅ |
-| Repos | Unlimited | Unlimited | Unlimited |
-| Dashboard | ✅ | ✅ | ✅ |
-| Telegram interface | ✅ | ✅ | ✅ |
-| Team dashboard | — | — | ✅ |
-| Price | $0 | $15/mo | contact |
 
 ---
 
 ## Stack
 
-| Layer | Technology |
+| Layer | Tech |
 |---|---|
-| Frontend / Dashboard | Next.js + Tailwind, hosted on Vercel |
-| Auth + Database | Supabase (GitHub OAuth, encrypted key storage) |
-| GitHub Integration | Octokit + GitHub REST API |
-| AI Layer | Anthropic SDK + OpenAI SDK |
-| Async Jobs | Trigger.dev |
+| Frontend | Next.js + Tailwind, Vercel |
+| Auth + DB | Supabase (GitHub OAuth, encrypted key storage) |
+| GitHub | Octokit + GitHub REST API |
+| AI | Anthropic SDK + OpenAI SDK |
+| Sandbox | E2B (isolated cloud VMs, 4GB RAM) |
+| Jobs | Trigger.dev |
 | Messenger | Telegram Bot API |
 | Payments | Stripe |
 
@@ -114,43 +93,22 @@ Bopple → You (6 min later):
 
 ## Roadmap
 
-- [x] Core concept
-- [ ] GitHub OAuth + repo indexing
-- [ ] Telegram bot interface
-- [ ] Claude + GPT multi-model support
-- [ ] Branch creation + PR opening
-- [ ] Mobile dashboard (task feed, diffs, status)
-- [ ] Push notifications
-- [ ] BYOK key management
+- [x] GitHub OAuth + repo indexing
+- [x] Telegram bot interface
+- [x] Cloud VM sandbox (E2B)
+- [x] Branch creation + PR opening
+- [x] Live preview URL
+- [x] Mobile dashboard
+- [x] BYOK key management
 - [ ] Stripe billing
-- [ ] WhatsApp support
 - [ ] Voice prompt support
-- [ ] Team tier + shared dashboard
+- [ ] WhatsApp support
+- [ ] Team dashboard
 
 ---
 
-## Beta
+## Contributing
 
-Bopple is currently in private beta. 10 free tasks, no credit card required.
+Built by [@jayptz](https://github.com/jayptz), [@Dhruvilp25](https://github.com/Dhruvilp25), and [@Vrundaa22](https://github.com/Vrundaa22).
 
-**[Join the waitlist →](https://bopple.dev)**
-
----
-
-## Philosophy
-
-Most async coding agents are built for engineers at a desk who want to parallelize work. Bopple is built for the developer who wants to keep shipping while living their life.
-
-You shouldn't have to be at your laptop to make progress on your codebase. A task should feel like texting a capable teammate — not configuring a dev tool.
-
-That's what Bopple is.
-
----
-
-## License
-
-MIT
-
----
-
-*Built by [@jayptz](https://github.com/jayptz)*
+MIT License.
