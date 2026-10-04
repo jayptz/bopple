@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 
 const links = [
   { href: "#demo", label: "Demo" },
-  { href: "#writeup", label: "Writeup" },
+  { href: "https://jayptz.me/blogs/bopple", label: "Writeup" },
   { href: "#moments", label: "Examples" },
   { href: "#how-it-works", label: "How it works" },
   { href: "#features", label: "Features" },
@@ -46,6 +46,9 @@ function NavBarContent() {
           <a
             key={l.href}
             href={l.href}
+            {...(l.href.startsWith("http")
+              ? { target: "_blank", rel: "noreferrer" }
+              : {})}
             className="whitespace-nowrap text-[14px] text-[#8B95A8] transition hover:text-white"
           >
             {l.label}

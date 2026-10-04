@@ -40,10 +40,12 @@ export function DemoFront() {
           </div>
 
           <a
-            href="#writeup"
+            href="https://jayptz.me/blogs/bopple"
+            target="_blank"
+            rel="noreferrer"
             className="mt-5 inline-flex w-fit items-center text-[14px] font-medium text-zinc-300 underline-offset-4 transition hover:text-white hover:underline"
           >
-            Read the technical writeup
+            Technical writeup
           </a>
         </div>
       </div>
