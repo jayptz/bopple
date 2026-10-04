@@ -26,7 +26,7 @@ export function DemoFront() {
           <div className="mt-6 overflow-hidden rounded-xl border border-zinc-800 bg-black shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
             <video
               className="aspect-video h-auto max-h-[70vh] w-full bg-black object-contain"
-              src="/bopple-demo.mp4"
+              src="/bopple-demo2.mp4"
               controls
               autoPlay
               muted
